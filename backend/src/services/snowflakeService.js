@@ -48,18 +48,37 @@ class SnowflakeService {
       // Running locally: Load config from snowflake.json file
       logger.debug('Detected local environment - loading from snowflake.json');
       try {
-        const configPath1 = path.join(__dirname, '../../config/snowflake.json');
-        const configPath2 = path.join(process.cwd(), 'config/snowflake.json');
+        // Try multiple possible paths for the config file
+        const possiblePaths = [
+          path.join(__dirname, '../../config/snowflake.json'),  // From backend/src/services/
+          path.join(__dirname, '../../../config/snowflake.json'), // If running from backend/
+          path.join(process.cwd(), 'config/snowflake.json'),      // From project root
+          path.join(process.cwd(), '../config/snowflake.json')   // From backend/ directory
+        ];
         
-        if (fs.existsSync(configPath1)) {
-          config = require(configPath1);
-        } else if (fs.existsSync(configPath2)) {
-          config = require(configPath2);
+        let configFound = false;
+        for (const configPath of possiblePaths) {
+          const resolvedPath = path.resolve(configPath);
+          if (fs.existsSync(resolvedPath)) {
+            logger.info(`Loading Snowflake config from: ${resolvedPath}`);
+            config = require(resolvedPath);
+            configFound = true;
+            break;
+          }
+        }
+        
+        if (!configFound) {
+          logger.error('Snowflake config file not found in any of the expected locations:');
+          possiblePaths.forEach(p => {
+            const resolved = path.resolve(p);
+            logger.error(`  - ${resolved} (exists: ${fs.existsSync(resolved)})`);
+          });
+          logger.warn('Using environment variables only - connection may fail!');
         } else {
-          logger.warn('Snowflake config file not found, using environment variables only');
+          logger.debug(`Config loaded: account=${config.account ? '***' : 'missing'}, username=${config.username ? config.username : 'missing'}, hasPassword=${!!config.password}, hasToken=${!!config.token}`);
         }
       } catch (e) {
-        logger.warn('Error loading Snowflake config file:', e.message);
+        logger.error('Error loading Snowflake config file:', e.message, e.stack);
       }
 
       return {
@@ -105,20 +124,37 @@ class SnowflakeService {
         };
       } else if (config.username && config.token) {
         // Use PAT (Programmatic Access Token) authentication (preferred for local dev)
+        // PAT tokens use OAuth authenticator, not SNOWFLAKE_JWT
         if (isSPCS) {
           logger.warn('Running in SPCS but OAuth token not available, falling back to PAT token');
         } else {
           logger.info('Creating Snowflake connection using PAT token (local environment)');
         }
+        // For PAT tokens, Snowflake SDK requires specific format
+        // PAT tokens are JWTs that use OAuth authenticator
+        // Extract account identifier (remove .snowflakecomputing.com if present)
+        let accountId = config.account;
+        if (accountId && accountId.includes('.snowflakecomputing.com')) {
+          accountId = accountId.replace('.snowflakecomputing.com', '');
+        }
+        
+        // Verify token format (should be a JWT starting with 'snpat_' or 'eyJ')
+        if (!config.token || (!config.token.startsWith('snpat_') && !config.token.startsWith('eyJ'))) {
+          logger.warn('PAT token format may be incorrect. Expected format: snpat_... or JWT token');
+        }
+        
         connectionConfig = {
-          account: config.account,
+          account: accountId,
           username: config.username,
           token: config.token,
-          authenticator: 'SNOWFLAKE_JWT',
+          authenticator: 'oauth',
           warehouse: config.warehouse,
           database: config.database,
           schema: config.schema,
-          role: config.role
+          role: config.role,
+          // Additional options that might help with PAT token authentication
+          insecureConnect: false,
+          ocspFailOpen: true
         };
       } else if (config.username && config.password) {
         // Fallback to username/password authentication (legacy support)
@@ -127,8 +163,14 @@ class SnowflakeService {
         } else {
           logger.warn('Using username/password authentication (consider switching to PAT token)');
         }
+        // Extract account identifier (remove .snowflakecomputing.com if present)
+        let accountId = config.account;
+        if (accountId && accountId.includes('.snowflakecomputing.com')) {
+          accountId = accountId.replace('.snowflakecomputing.com', '');
+        }
+        logger.debug(`Extracted account ID: ${accountId} from ${config.account}`);
         connectionConfig = {
-          account: config.account,
+          account: accountId,
           username: config.username,
           password: config.password,
           warehouse: config.warehouse,

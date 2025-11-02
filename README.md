@@ -49,19 +49,26 @@ A comprehensive API proxy service designed to run on Snowflake Container Service
    cd ../backend && npm install
    ```
 
-4. **Configuration**
+4. **Start Development Servers**
+   ```bash
+   # Option 1: Use the startup script (recommended)
+   ./scripts/start.sh
+   
+   # Option 2: Use npm script
+   npm run dev
+   
+   # Option 3: Start manually
+   # Terminal 1 - Backend
+   npm run dev:backend
+   
+   # Terminal 2 - Frontend
+   npm run dev:frontend
+   ```
+
+5. **Configuration**
    - Copy `config/snowflake.example.json` to `config/snowflake.json`
    - Update Snowflake connection details with service account credentials
    - Configure PAT token settings
-
-5. **Development**
-   ```bash
-   # Start backend
-   npm run dev:backend
-   
-   # Start frontend (in another terminal)
-   npm run dev:frontend
-   ```
 
 6. **Production Deployment**
    
@@ -73,15 +80,15 @@ A comprehensive API proxy service designed to run on Snowflake Container Service
    brew install snowflake-labs/snowflake/snow-cli
    
    # Deploy to Snowflake Container Services
-   npm run deploy:production
+   ./scripts/deploy.sh
    ```
    
-   For local development/testing:
+   **For local Docker testing:**
    ```bash
    docker-compose up -d
    ```
 
-7. **Cleanup/Teardown**
+8. **Cleanup/Teardown**
    
    To remove all deployed resources (service, compute pool, database, warehouse, user, role):
    ```bash

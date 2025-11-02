@@ -10,13 +10,15 @@ import {
   LogOut,
   User,
   Activity,
+  Tag,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: Home },
   { name: 'Endpoints', href: '/endpoints', icon: Server },
-  { name: 'Tokens', href: '/tokens', icon: Key },
+  { name: 'API Keys', href: '/api-keys', icon: Key },
+  { name: 'Tags', href: '/tags', icon: Tag },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 

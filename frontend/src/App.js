@@ -9,7 +9,8 @@ import Endpoints from './pages/Endpoints';
 import EndpointDetail from './pages/EndpointDetail';
 import CreateEndpoint from './pages/CreateEndpoint';
 import EditEndpoint from './pages/EditEndpoint';
-import Tokens from './pages/Tokens';
+import APIKeys from './pages/APIKeys';
+import Tags from './pages/Tags';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
 
@@ -51,7 +52,8 @@ function AppContent() {
             <Route path="/endpoints/new" element={<CreateEndpoint />} />
             <Route path="/endpoints/:id" element={<EndpointDetail />} />
             <Route path="/endpoints/:id/edit" element={<EditEndpoint />} />
-            <Route path="/tokens" element={<Tokens />} />
+            <Route path="/api-keys" element={<APIKeys />} />
+            <Route path="/tags" element={<Tags />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </Layout>

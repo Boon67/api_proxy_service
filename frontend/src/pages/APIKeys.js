@@ -4,16 +4,16 @@ import { Key, Copy, RefreshCw, Trash2 } from 'lucide-react';
 import { apiService } from '../services/api';
 import toast from 'react-hot-toast';
 
-const Tokens = () => {
-  const { data: tokens, isLoading, refetch } = useQuery(
-    'tokens',
-    apiService.getTokens,
+const APIKeys = () => {
+  const { data: apiKeys, isLoading, refetch } = useQuery(
+    'apiKeys',
+    apiService.getAPIKeys,
     { refetchInterval: 30000 }
   );
 
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text);
-    toast.success('Token copied to clipboard!');
+    toast.success('API Key copied to clipboard!');
   };
 
   if (isLoading) {
@@ -29,9 +29,9 @@ const Tokens = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-snowflake-900">API Tokens</h1>
+          <h1 className="text-2xl font-bold text-snowflake-900">API Keys</h1>
           <p className="mt-1 text-sm text-snowflake-600">
-            Manage PAT tokens for API access
+            Manage API keys for endpoint access
           </p>
         </div>
         <button
@@ -43,20 +43,20 @@ const Tokens = () => {
         </button>
       </div>
 
-      {/* Tokens List */}
-      {tokens?.data?.length === 0 ? (
+      {/* API Keys List */}
+      {apiKeys?.data?.length === 0 ? (
         <div className="text-center py-12">
           <Key className="mx-auto h-12 w-12 text-snowflake-400" />
-          <h3 className="mt-2 text-sm font-medium text-snowflake-900">No tokens</h3>
+          <h3 className="mt-2 text-sm font-medium text-snowflake-900">No API Keys</h3>
           <p className="mt-1 text-sm text-snowflake-500">
-            Create an endpoint to generate tokens.
+            Create an endpoint to generate API keys.
           </p>
         </div>
       ) : (
         <div className="bg-white shadow overflow-hidden sm:rounded-md">
           <ul className="divide-y divide-snowflake-200">
-            {tokens?.data?.map((token) => (
-              <li key={token.id}>
+            {apiKeys?.data?.map((apiKey) => (
+              <li key={apiKey.id}>
                 <div className="px-4 py-4 flex items-center justify-between">
                   <div className="flex items-center">
                     <div className="flex-shrink-0">
@@ -65,26 +65,26 @@ const Tokens = () => {
                     <div className="ml-4">
                       <div className="flex items-center">
                         <h3 className="text-sm font-medium text-snowflake-900">
-                          {token.metadata?.endpointName || 'Unknown Endpoint'}
+                          {apiKey.metadata?.endpointName || 'Unknown Endpoint'}
                         </h3>
                         <span className={`ml-2 badge ${
-                          token.isActive ? 'badge-success' : 'badge-error'
+                          apiKey.isActive ? 'badge-success' : 'badge-error'
                         }`}>
-                          {token.isActive ? 'Active' : 'Inactive'}
+                          {apiKey.isActive ? 'Active' : 'Inactive'}
                         </span>
                       </div>
                       <p className="text-sm text-snowflake-500">
-                        Created: {new Date(token.createdAt).toLocaleString()}
+                        Created: {new Date(apiKey.createdAt).toLocaleString()}
                       </p>
                       <div className="mt-1 flex items-center text-xs text-snowflake-500">
-                        <span className="mr-4">Usage: {token.usageCount} requests</span>
-                        <span>Last used: {token.lastUsed ? new Date(token.lastUsed).toLocaleString() : 'Never'}</span>
+                        <span className="mr-4">Usage: {apiKey.usageCount} requests</span>
+                        <span>Last used: {apiKey.lastUsed ? new Date(apiKey.lastUsed).toLocaleString() : 'Never'}</span>
                       </div>
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
                     <button
-                      onClick={() => copyToClipboard(token.token)}
+                      onClick={() => copyToClipboard(apiKey.token)}
                       className="btn btn-secondary btn-sm"
                     >
                       <Copy className="h-4 w-4 mr-1" />
@@ -105,4 +105,4 @@ const Tokens = () => {
   );
 };
 
-export default Tokens;
+export default APIKeys;

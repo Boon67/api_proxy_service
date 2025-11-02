@@ -42,11 +42,13 @@ const getEndpointData = async (req, res, next) => {
     });
   }
 
-  if (!endpoint.isActive) {
+  // Only active endpoints can receive requests
+  const endpointStatus = endpoint.status || (endpoint.isActive ? 'active' : 'suspended');
+  if (endpointStatus !== 'active') {
     return res.status(403).json({
       success: false,
       error: 'Forbidden',
-      message: 'Endpoint is inactive'
+      message: `Endpoint is ${endpointStatus}. Only active endpoints can receive requests.`
     });
   }
 
@@ -68,8 +70,13 @@ const validateMethod = (req, res, next) => {
 
 // Execute query based on endpoint type
 const executeEndpoint = async (req, res) => {
+  const startTime = Date.now();
+  const requestId = req.requestId || req.tokenData?.tokenId;
+  let responseStatus = 200;
+  let errorMessage = null;
+
   try {
-    const { endpoint } = req;
+    const { endpoint, tokenData } = req;
     let result;
 
     // Get Snowflake connection (in production, use connection pooling)
@@ -101,6 +108,30 @@ const executeEndpoint = async (req, res) => {
           throw new Error(`Unsupported endpoint type: ${endpoint.type}`);
       }
 
+      // Log successful request and update token usage
+      const responseTime = Date.now() - startTime;
+      
+      // Log to audit log (async, don't wait)
+      databaseService.logApiRequest({
+        requestId,
+        endpointId: endpoint.id,
+        tokenId: tokenData?.id || null,
+        method: req.method,
+        url: req.originalUrl,
+        ip: req.ip || req.connection.remoteAddress,
+        userAgent: req.get('user-agent'),
+        body: req.body,
+        status: 200,
+        responseTime,
+        errorMessage: null
+      }).catch(err => logger.error('Error logging API request:', err));
+
+      // Update token usage (async, don't wait)
+      if (tokenData?.id) {
+        databaseService.updateTokenUsage(tokenData.id, endpoint.id)
+          .catch(err => logger.error('Error updating token usage:', err));
+      }
+
       res.json({
         success: true,
         data: result.rows,
@@ -118,7 +149,27 @@ const executeEndpoint = async (req, res) => {
     }
 
   } catch (error) {
+    const responseTime = Date.now() - startTime;
+    responseStatus = 500;
+    errorMessage = error.message;
+    
     logger.error('Error executing endpoint:', error);
+    
+    // Log failed request (async, don't wait)
+    databaseService.logApiRequest({
+      requestId,
+      endpointId: req.endpoint?.id || null,
+      tokenId: req.tokenData?.id || null,
+      method: req.method,
+      url: req.originalUrl,
+      ip: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('user-agent'),
+      body: req.body,
+      status: 500,
+      responseTime,
+      errorMessage: error.message
+    }).catch(err => logger.error('Error logging API request:', err));
+
     res.status(500).json({
       success: false,
       error: 'Execution failed',

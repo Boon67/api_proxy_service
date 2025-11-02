@@ -8,6 +8,7 @@ import {
   AlertCircle,
   CheckCircle,
   Settings,
+  Tag,
 } from 'lucide-react';
 import { apiService } from '../services/api';
 import StatsCard from '../components/StatsCard';
@@ -33,7 +34,14 @@ const Dashboard = () => {
     { refetchInterval: 30000 }
   );
 
-  if (statsLoading || healthLoading || endpointsLoading) {
+  const { data: tagsResponse, isLoading: tagsLoading } = useQuery(
+    'tags',
+    apiService.getTags,
+    { refetchInterval: 30000 }
+  );
+  const tags = tagsResponse?.data || [];
+
+  if (statsLoading || healthLoading || endpointsLoading || tagsLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
@@ -42,8 +50,8 @@ const Dashboard = () => {
   }
 
   const systemStatus = health?.status === 'healthy' ? 'healthy' : 'degraded';
-  const activeEndpoints = endpoints?.data?.filter(ep => ep.isActive) || [];
-  const inactiveEndpoints = endpoints?.data?.filter(ep => !ep.isActive) || [];
+  const activeEndpoints = endpoints?.data?.filter(ep => ep.status === 'active') || [];
+  // Dashboard uses stats from API, not filtering from endpoints array
 
   return (
     <div className="space-y-6">
@@ -80,13 +88,13 @@ const Dashboard = () => {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
         <StatsCard
           title="Total Endpoints"
           value={stats?.data?.endpoints?.total || 0}
           icon={Server}
           color="blue"
-          change={+5}
+          change={stats?.data?.endpoints?.change || 0}
           changeLabel="from last month"
         />
         <StatsCard
@@ -94,24 +102,24 @@ const Dashboard = () => {
           value={stats?.data?.endpoints?.active || 0}
           icon={Activity}
           color="green"
-          change={+2}
-          changeLabel="from last week"
+          change={undefined}
+          changeLabel={undefined}
         />
         <StatsCard
-          title="Active Tokens"
+          title="Active API Keys"
           value={stats?.data?.tokens?.active || 0}
           icon={Key}
           color="purple"
-          change={+12}
-          changeLabel="from last week"
+          change={stats?.data?.tokens?.change || 0}
+          changeLabel="from last month"
         />
         <StatsCard
-          title="Total Usage"
-          value={stats?.data?.tokens?.totalUsage || 0}
-          icon={TrendingUp}
-          color="orange"
-          change={+18}
-          changeLabel="from last month"
+          title="Total Tags"
+          value={tags.length || 0}
+          icon={Tag}
+          color="indigo"
+          change={undefined}
+          changeLabel={undefined}
         />
       </div>
 
@@ -139,7 +147,7 @@ const Dashboard = () => {
         <h3 className="text-lg font-medium text-snowflake-900 mb-4">
           Quick Actions
         </h3>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <a
             href="/endpoints/new"
             className="relative block rounded-lg border-2 border-dashed border-snowflake-300 p-6 text-center hover:border-snowflake-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
@@ -150,12 +158,21 @@ const Dashboard = () => {
             </span>
           </a>
           <a
-            href="/tokens"
+            href="/api-keys"
             className="relative block rounded-lg border-2 border-dashed border-snowflake-300 p-6 text-center hover:border-snowflake-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
           >
             <Key className="mx-auto h-8 w-8 text-snowflake-400" />
             <span className="mt-2 block text-sm font-medium text-snowflake-900">
-              Manage Tokens
+              Manage API Keys
+            </span>
+          </a>
+          <a
+            href="/tags"
+            className="relative block rounded-lg border-2 border-dashed border-snowflake-300 p-6 text-center hover:border-snowflake-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+          >
+            <Tag className="mx-auto h-8 w-8 text-snowflake-400" />
+            <span className="mt-2 block text-sm font-medium text-snowflake-900">
+              Manage Tags
             </span>
           </a>
           <a

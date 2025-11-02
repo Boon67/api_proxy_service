@@ -28,18 +28,9 @@ router.get('/detailed', async (req, res) => {
   };
 
   try {
-    // Check Snowflake connection
-    const snowflakeConfig = {
-      account: process.env.SNOWFLAKE_ACCOUNT,
-      username: process.env.SNOWFLAKE_USERNAME,
-      password: process.env.SNOWFLAKE_PASSWORD,
-      warehouse: process.env.SNOWFLAKE_WAREHOUSE,
-      database: process.env.SNOWFLAKE_DATABASE,
-      schema: process.env.SNOWFLAKE_SCHEMA,
-      role: process.env.SNOWFLAKE_ROLE
-    };
-
-    const snowflakeTest = await snowflakeService.testConnection(snowflakeConfig);
+    // Check Snowflake connection - use loadConfig to get current config (SPCS or local)
+    const config = snowflakeService.loadConfig();
+    const snowflakeTest = await snowflakeService.testConnection(config);
     health.services.snowflake = {
       status: snowflakeTest.success ? 'healthy' : 'unhealthy',
       message: snowflakeTest.message
@@ -107,18 +98,9 @@ router.get('/detailed', async (req, res) => {
 // Readiness check
 router.get('/ready', async (req, res) => {
   try {
-    // Check if all critical services are ready
-    const snowflakeConfig = {
-      account: process.env.SNOWFLAKE_ACCOUNT,
-      username: process.env.SNOWFLAKE_USERNAME,
-      password: process.env.SNOWFLAKE_PASSWORD,
-      warehouse: process.env.SNOWFLAKE_WAREHOUSE,
-      database: process.env.SNOWFLAKE_DATABASE,
-      schema: process.env.SNOWFLAKE_SCHEMA,
-      role: process.env.SNOWFLAKE_ROLE
-    };
-
-    const snowflakeTest = await snowflakeService.testConnection(snowflakeConfig);
+    // Check if all critical services are ready - use loadConfig to get current config
+    const config = snowflakeService.loadConfig();
+    const snowflakeTest = await snowflakeService.testConnection(config);
     
     if (!snowflakeTest.success) {
       return res.status(503).json({

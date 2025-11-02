@@ -51,13 +51,15 @@ CREATE TABLE IF NOT EXISTS ENDPOINTS (
     METHOD VARCHAR(10) DEFAULT 'GET', -- HTTP method
     PARAMETERS VARIANT, -- JSON array of parameter definitions
     RATE_LIMIT INTEGER DEFAULT 100, -- Requests per minute
-    IS_ACTIVE BOOLEAN DEFAULT TRUE,
+    STATUS VARCHAR(20) DEFAULT 'draft', -- 'active', 'draft', 'suspended'
+    IS_ACTIVE BOOLEAN DEFAULT TRUE, -- Deprecated: kept for backward compatibility, use STATUS instead
     CREATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
     UPDATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
     CREATED_BY VARCHAR(255),
+    UPDATED_BY VARCHAR(255),
     METADATA VARIANT -- Additional JSON metadata
 )
-CLUSTER BY (IS_ACTIVE, TYPE);
+CLUSTER BY (STATUS, TYPE);
 
 -- =====================================================
 -- 3. PAT_TOKENS TABLE - For Personal Access Tokens
@@ -77,7 +79,45 @@ CREATE TABLE IF NOT EXISTS PAT_TOKENS (
 CLUSTER BY (TOKEN_ID, IS_ACTIVE);
 
 -- =====================================================
--- 4. CREATE INDEXES (if needed - Snowflake uses clustering keys above)
+-- 4. TAGS TABLE - For tagging endpoints and tokens
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS TAGS (
+    TAG_ID VARCHAR(36) DEFAULT UUID_STRING(),
+    NAME VARCHAR(100) NOT NULL UNIQUE,
+    COLOR VARCHAR(7), -- Hex color code (e.g., #FF5733)
+    DESCRIPTION VARCHAR(500),
+    CREATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    CREATED_BY VARCHAR(255)
+)
+CLUSTER BY (NAME);
+
+-- =====================================================
+-- 5. ENDPOINT_TAGS TABLE - Junction table for endpoint tags
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS ENDPOINT_TAGS (
+    ENDPOINT_ID VARCHAR(36) NOT NULL,
+    TAG_ID VARCHAR(36) NOT NULL,
+    CREATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (ENDPOINT_ID, TAG_ID)
+)
+CLUSTER BY (ENDPOINT_ID, TAG_ID);
+
+-- =====================================================
+-- 6. TOKEN_TAGS TABLE - Junction table for token tags
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS TOKEN_TAGS (
+    TOKEN_ID VARCHAR(36) NOT NULL,
+    TAG_ID VARCHAR(36) NOT NULL,
+    CREATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (TOKEN_ID, TAG_ID)
+)
+CLUSTER BY (TOKEN_ID, TAG_ID);
+
+-- =====================================================
+-- 7. CREATE INDEXES (if needed - Snowflake uses clustering keys above)
 -- =====================================================
 
 -- Note: Snowflake uses clustering keys instead of traditional indexes
@@ -91,10 +131,13 @@ CLUSTER BY (TOKEN_ID, IS_ACTIVE);
 -- Note: If API_PROXY_SERVICE_ROLE doesn't exist, run setup_service_account.sql first
 -- or create the role manually, then re-run this section
 
--- Uncomment the following lines after the role is created:
--- GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE USERS TO ROLE API_PROXY_SERVICE_ROLE;
--- GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ENDPOINTS TO ROLE API_PROXY_SERVICE_ROLE;
--- GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE PAT_TOKENS TO ROLE API_PROXY_SERVICE_ROLE;
+-- Grant permissions on tables to the service role
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE API_PROXY.APP.USERS TO ROLE API_PROXY_SERVICE_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE API_PROXY.APP.ENDPOINTS TO ROLE API_PROXY_SERVICE_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE API_PROXY.APP.PAT_TOKENS TO ROLE API_PROXY_SERVICE_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE API_PROXY.APP.TAGS TO ROLE API_PROXY_SERVICE_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE API_PROXY.APP.ENDPOINT_TAGS TO ROLE API_PROXY_SERVICE_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE API_PROXY.APP.TOKEN_TAGS TO ROLE API_PROXY_SERVICE_ROLE;
 
 -- Alternative: Grant to current role for now (will grant to API_PROXY_SERVICE_ROLE later)
 -- For now, tables are created and can be accessed by ACCOUNTADMIN
@@ -124,7 +167,67 @@ SELECT
 WHERE NOT EXISTS (SELECT 1 FROM USERS WHERE USERNAME = 'admin');
 
 -- =====================================================
--- 7. CREATE HELPFUL VIEWS
+-- 7. CREATE AUDIT/LOGGING TABLES
+-- =====================================================
+
+-- Create audit log table for API requests
+CREATE TABLE IF NOT EXISTS API_AUDIT_LOG (
+    LOG_ID VARCHAR(36) DEFAULT UUID_STRING(),
+    REQUEST_ID VARCHAR(36),
+    ENDPOINT_ID VARCHAR(36),
+    TOKEN_ID VARCHAR(36),
+    REQUEST_METHOD VARCHAR(10),
+    REQUEST_URL VARCHAR(500),
+    REQUEST_IP VARCHAR(45),
+    USER_AGENT VARCHAR(500),
+    REQUEST_BODY VARIANT,
+    RESPONSE_STATUS INTEGER,
+    RESPONSE_TIME_MS INTEGER,
+    ERROR_MESSAGE VARCHAR(1000),
+    CREATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+)
+CLUSTER BY (CREATED_AT, ENDPOINT_ID);
+
+-- Create token usage tracking table (daily aggregation)
+CREATE TABLE IF NOT EXISTS TOKEN_USAGE_LOG (
+    USAGE_ID VARCHAR(36) DEFAULT UUID_STRING(),
+    TOKEN_ID VARCHAR(36),
+    ENDPOINT_ID VARCHAR(36),
+    REQUEST_COUNT INTEGER DEFAULT 1,
+    LAST_USED TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    CREATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+)
+CLUSTER BY (TOKEN_ID, LAST_USED);
+
+-- Create system settings table
+CREATE TABLE IF NOT EXISTS SYSTEM_SETTINGS (
+    SETTING_KEY VARCHAR(100) NOT NULL PRIMARY KEY,
+    SETTING_VALUE VARIANT NOT NULL,
+    DESCRIPTION VARCHAR(500),
+    UPDATED_AT TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP(),
+    UPDATED_BY VARCHAR(255)
+)
+CLUSTER BY (SETTING_KEY);
+
+-- Insert default system settings
+INSERT INTO SYSTEM_SETTINGS (SETTING_KEY, SETTING_VALUE, DESCRIPTION, UPDATED_BY)
+SELECT 'log_level', 'info', 'Logging level (error, warn, info, debug)', 'system'
+WHERE NOT EXISTS (SELECT 1 FROM SYSTEM_SETTINGS WHERE SETTING_KEY = 'log_level');
+
+INSERT INTO SYSTEM_SETTINGS (SETTING_KEY, SETTING_VALUE, DESCRIPTION, UPDATED_BY)
+SELECT 'rate_limit_default', 100, 'Default rate limit for new endpoints (requests per minute)', 'system'
+WHERE NOT EXISTS (SELECT 1 FROM SYSTEM_SETTINGS WHERE SETTING_KEY = 'rate_limit_default');
+
+INSERT INTO SYSTEM_SETTINGS (SETTING_KEY, SETTING_VALUE, DESCRIPTION, UPDATED_BY)
+SELECT 'session_timeout', 3600, 'Session timeout in seconds (default: 1 hour)', 'system'
+WHERE NOT EXISTS (SELECT 1 FROM SYSTEM_SETTINGS WHERE SETTING_KEY = 'session_timeout');
+
+INSERT INTO SYSTEM_SETTINGS (SETTING_KEY, SETTING_VALUE, DESCRIPTION, UPDATED_BY)
+SELECT 'enable_audit_log', TRUE, 'Enable audit logging to API_AUDIT_LOG table', 'system'
+WHERE NOT EXISTS (SELECT 1 FROM SYSTEM_SETTINGS WHERE SETTING_KEY = 'enable_audit_log');
+
+-- =====================================================
+-- 8. CREATE HELPFUL VIEWS
 -- =====================================================
 
 -- View for active endpoints with token info
@@ -162,7 +265,52 @@ LEFT JOIN PAT_TOKENS t ON e.ENDPOINT_ID = t.ENDPOINT_ID AND t.IS_ACTIVE = TRUE
 GROUP BY e.ENDPOINT_ID, e.NAME, e.TYPE, e.IS_ACTIVE;
 
 -- =====================================================
--- 8. VERIFICATION
+-- 9. CREATE USEFUL VIEWS FOR ANALYTICS
+-- =====================================================
+
+-- View for API usage statistics (hourly aggregation)
+CREATE OR REPLACE VIEW API_USAGE_STATS AS
+SELECT 
+    DATE_TRUNC('HOUR', CREATED_AT) AS HOUR,
+    ENDPOINT_ID,
+    COUNT(*) AS REQUEST_COUNT,
+    AVG(RESPONSE_TIME_MS) AS AVG_RESPONSE_TIME_MS,
+    COUNT(CASE WHEN RESPONSE_STATUS >= 400 THEN 1 END) AS ERROR_COUNT
+FROM API_AUDIT_LOG
+WHERE CREATED_AT >= DATEADD(DAY, -7, CURRENT_TIMESTAMP())
+GROUP BY DATE_TRUNC('HOUR', CREATED_AT), ENDPOINT_ID
+ORDER BY HOUR DESC;
+
+-- View for token usage statistics
+CREATE OR REPLACE VIEW TOKEN_USAGE_STATS AS
+SELECT 
+    TOKEN_ID,
+    ENDPOINT_ID,
+    SUM(REQUEST_COUNT) AS TOTAL_REQUESTS,
+    MAX(LAST_USED) AS LAST_USED,
+    COUNT(DISTINCT DATE(LAST_USED)) AS ACTIVE_DAYS
+FROM TOKEN_USAGE_LOG
+WHERE LAST_USED >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
+GROUP BY TOKEN_ID, ENDPOINT_ID
+ORDER BY TOTAL_REQUESTS DESC;
+
+-- View for endpoint usage summary (for charts)
+CREATE OR REPLACE VIEW ENDPOINT_USAGE_SUMMARY AS
+SELECT 
+    e.ENDPOINT_ID,
+    e.NAME,
+    e.TYPE,
+    COUNT(DISTINCT a.LOG_ID) AS TOTAL_REQUESTS,
+    COUNT(DISTINCT DATE(a.CREATED_AT)) AS ACTIVE_DAYS,
+    AVG(a.RESPONSE_TIME_MS) AS AVG_RESPONSE_TIME_MS,
+    MAX(a.CREATED_AT) AS LAST_REQUEST
+FROM ENDPOINTS e
+LEFT JOIN API_AUDIT_LOG a ON e.ENDPOINT_ID = a.ENDPOINT_ID
+    AND a.CREATED_AT >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
+GROUP BY e.ENDPOINT_ID, e.NAME, e.TYPE;
+
+-- =====================================================
+-- 10. VERIFICATION
 -- =====================================================
 
 -- Verify tables were created

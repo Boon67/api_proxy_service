@@ -1,4 +1,5 @@
 import React from 'react';
+import { useQuery } from 'react-query';
 import {
   BarChart,
   Bar,
@@ -8,14 +9,29 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
+import { apiService } from '../services/api';
 
 const EndpointChart = ({ endpoints }) => {
-  // Mock data - in a real app, this would come from analytics API
-  const chartData = endpoints.map((endpoint, index) => ({
+  const { data: usageData, isLoading } = useQuery(
+    'endpointUsage',
+    apiService.getEndpointUsage,
+    { refetchInterval: 60000 } // Refresh every minute
+  );
+
+  // Create a map of endpoint ID to usage
+  const usageMap = {};
+  if (usageData?.data) {
+    usageData.data.forEach(item => {
+      usageMap[item.endpointId] = item.usage;
+    });
+  }
+
+  // Map endpoints to chart data with real usage
+  const chartData = endpoints.map((endpoint) => ({
     name: endpoint.name.length > 15 
       ? `${endpoint.name.substring(0, 15)}...` 
       : endpoint.name,
-    usage: Math.floor(Math.random() * 1000) + 100, // Mock usage data
+    usage: usageMap[endpoint.id] || 0,
     type: endpoint.type,
   }));
 
@@ -35,6 +51,14 @@ const EndpointChart = ({ endpoints }) => {
     }
     return null;
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+      </div>
+    );
+  }
 
   if (chartData.length === 0) {
     return (

@@ -1,20 +1,70 @@
 import React from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, watch } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
-import { Plus, ArrowLeft } from 'lucide-react';
+import { useQuery } from 'react-query';
+import { Plus, ArrowLeft, Copy, Check, X, Play, Loader } from 'lucide-react';
 import { apiService } from '../services/api';
 import toast from 'react-hot-toast';
+import TagSelector from '../components/TagSelector';
 
 const CreateEndpoint = () => {
   const navigate = useNavigate();
-  const { register, handleSubmit, formState: { errors } } = useForm();
+  const { register, handleSubmit, formState: { errors }, watch } = useForm();
+  const type = watch('type');
+  const target = watch('target');
+
+  const [createdEndpoint, setCreatedEndpoint] = React.useState(null);
+  const [showUrlModal, setShowUrlModal] = React.useState(false);
+  const [isTesting, setIsTesting] = React.useState(false);
+  const [testResult, setTestResult] = React.useState(null);
+  const [selectedTags, setSelectedTags] = React.useState([]);
+
+  const { data: tagsResponse } = useQuery('tags', apiService.getTags);
+  const tags = tagsResponse?.data || [];
+
+  const handleTestTarget = async () => {
+    if (!type || !target) {
+      toast.error('Please enter both Type and Target to test');
+      return;
+    }
+
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const response = await apiService.testTarget(type, target);
+      if (response.success) {
+        setTestResult(response.data);
+        toast.success(`Test successful! Returned ${response.data.rowCount} row(s)`);
+      } else {
+        toast.error(response.error || 'Test failed');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.response?.data?.error || 'An error occurred while testing');
+      setTestResult({ error: error.response?.data?.message || error.response?.data?.error || 'Test failed' });
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   const onSubmit = async (data) => {
     try {
       const response = await apiService.createEndpoint(data);
       if (response.success) {
+        const endpointId = response.data.id;
+        
+        // Set tags if any are selected
+        if (selectedTags.length > 0) {
+          try {
+            await apiService.setEndpointTags(endpointId, selectedTags);
+          } catch (tagError) {
+            console.error('Failed to set tags:', tagError);
+            // Don't fail the whole creation if tags fail
+          }
+        }
+        
+        setCreatedEndpoint(response.data);
+        setShowUrlModal(true);
         toast.success('Endpoint created successfully!');
-        navigate('/endpoints');
       } else {
         toast.error(response.error || 'Failed to create endpoint');
       }
@@ -24,48 +74,48 @@ const CreateEndpoint = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center">
         <button
           onClick={() => navigate('/endpoints')}
-          className="mr-4 p-2 text-snowflake-400 hover:text-snowflake-600"
+          className="mr-3 p-1.5 text-snowflake-400 hover:text-snowflake-600"
         >
-          <ArrowLeft className="h-5 w-5" />
+          <ArrowLeft className="h-4 w-4" />
         </button>
         <div>
-          <h1 className="text-2xl font-bold text-snowflake-900">Create Endpoint</h1>
-          <p className="mt-1 text-sm text-snowflake-600">
+          <h1 className="text-xl font-bold text-snowflake-900">Create Endpoint</h1>
+          <p className="text-xs text-snowflake-600">
             Create a new API endpoint for Snowflake access
           </p>
         </div>
       </div>
 
       {/* Form */}
-      <div className="bg-white rounded-lg border border-snowflake-200 p-6">
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="bg-white rounded-lg border border-snowflake-200 p-4">
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-snowflake-700">
+              <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
                 Name *
               </label>
               <input
                 {...register('name', { required: 'Name is required' })}
-                className="input mt-1"
+                className="input text-sm py-1.5"
                 placeholder="Enter endpoint name"
               />
               {errors.name && (
-                <p className="mt-1 text-sm text-red-600">{errors.name.message}</p>
+                <p className="mt-0.5 text-xs text-red-600">{errors.name.message}</p>
               )}
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-snowflake-700">
+              <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
                 Type *
               </label>
               <select
                 {...register('type', { required: 'Type is required' })}
-                className="select mt-1"
+                className="select text-sm py-1.5"
               >
                 <option value="">Select type</option>
                 <option value="query">SQL Query</option>
@@ -74,46 +124,103 @@ const CreateEndpoint = () => {
                 <option value="table">Table</option>
               </select>
               {errors.type && (
-                <p className="mt-1 text-sm text-red-600">{errors.type.message}</p>
+                <p className="mt-0.5 text-xs text-red-600">{errors.type.message}</p>
               )}
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-snowflake-700">
+            <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
               Description
             </label>
             <textarea
               {...register('description')}
-              className="textarea mt-1"
-              rows={3}
+              className="textarea text-sm py-1.5"
+              rows={2}
               placeholder="Enter endpoint description"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-snowflake-700">
-              Target *
-            </label>
+            <div className="flex items-center justify-between mb-0.5">
+              <label className="block text-xs font-medium text-snowflake-700">
+                SQL Command *
+              </label>
+              <button
+                type="button"
+                onClick={handleTestTarget}
+                disabled={!type || !target || isTesting}
+                className="text-xs px-2 py-1 bg-primary-100 text-primary-700 rounded hover:bg-primary-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+              >
+                {isTesting ? (
+                  <>
+                    <Loader className="h-3 w-3 animate-spin" />
+                    Testing...
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-3 w-3" />
+                    Test Target
+                  </>
+                )}
+              </button>
+            </div>
             <textarea
-              {...register('target', { required: 'Target is required' })}
-              className="textarea mt-1"
-              rows={4}
+              {...register('target', { required: 'SQL Command is required' })}
+              className="textarea text-sm py-1.5 font-mono"
+              rows={3}
               placeholder="Enter SQL query, procedure name, function name, or table name"
             />
             {errors.target && (
-              <p className="mt-1 text-sm text-red-600">{errors.target.message}</p>
+              <p className="mt-0.5 text-xs text-red-600">{errors.target.message}</p>
             )}
           </div>
 
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          {testResult && (
+            <div className={`p-2 rounded text-xs ${testResult.error ? 'bg-red-50 border border-red-200 text-red-800' : 'bg-green-50 border border-green-200 text-green-800'}`}>
+              {testResult.error ? (
+                <div>
+                  <strong>Test Failed:</strong> {testResult.error}
+                </div>
+              ) : (
+                <div>
+                  <strong>Test Successful!</strong> Returned {testResult.rowCount || 0} row(s) in {testResult.testMetadata?.duration || 'N/A'}
+                  {testResult.rows && testResult.rows.length > 0 && (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer font-medium">View Results ({testResult.rows.length} rows)</summary>
+                      <pre className="mt-1 text-xs bg-white p-2 rounded border max-h-40 overflow-auto">
+                        {JSON.stringify(testResult.rows.slice(0, 5), null, 2)}
+                        {testResult.rows.length > 5 && `\n... and ${testResult.rows.length - 5} more rows`}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
+              Tags
+            </label>
+            <TagSelector
+              tags={tags}
+              selectedTagIds={selectedTags}
+              onChange={setSelectedTags}
+            />
+            <p className="mt-1 text-xs text-snowflake-500">
+              Select tags to organize this endpoint. Use search to find tags quickly.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
             <div>
-              <label className="block text-sm font-medium text-snowflake-700">
+              <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
                 Method *
               </label>
               <select
                 {...register('method', { required: 'Method is required' })}
-                className="select mt-1"
+                className="select text-sm py-1.5"
               >
                 <option value="GET">GET</option>
                 <option value="POST">POST</option>
@@ -121,13 +228,13 @@ const CreateEndpoint = () => {
                 <option value="DELETE">DELETE</option>
               </select>
               {errors.method && (
-                <p className="mt-1 text-sm text-red-600">{errors.method.message}</p>
+                <p className="mt-0.5 text-xs text-red-600">{errors.method.message}</p>
               )}
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-snowflake-700">
-                Rate Limit (requests/minute)
+              <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
+                Rate Limit (req/min)
               </label>
               <input
                 {...register('rateLimit', { 
@@ -136,31 +243,124 @@ const CreateEndpoint = () => {
                   max: 10000
                 })}
                 type="number"
-                className="input mt-1"
+                className="input text-sm py-1.5"
                 placeholder="100"
                 defaultValue={100}
               />
             </div>
+
+            <div>
+              <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
+                Status *
+              </label>
+              <select
+                {...register('status', { required: 'Status is required' })}
+                className="select text-sm py-1.5"
+                defaultValue="draft"
+              >
+                <option value="draft">Draft</option>
+                <option value="active">Active</option>
+                <option value="suspended">Suspended</option>
+              </select>
+              {errors.status && (
+                <p className="mt-0.5 text-xs text-red-600">{errors.status.message}</p>
+              )}
+            </div>
           </div>
 
-          <div className="flex justify-end space-x-3">
+          <div className="flex justify-end space-x-2 pt-2">
             <button
               type="button"
               onClick={() => navigate('/endpoints')}
-              className="btn btn-secondary btn-md"
+              className="btn btn-secondary btn-sm"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="btn btn-primary btn-md"
+              className="btn btn-primary btn-sm"
             >
-              <Plus className="h-4 w-4 mr-2" />
+              <Plus className="h-3 w-3 mr-1.5" />
               Create Endpoint
             </button>
           </div>
         </form>
       </div>
+
+      {/* Endpoint URL Modal */}
+      {showUrlModal && createdEndpoint && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            <div className="fixed inset-0 bg-snowflake-500 bg-opacity-75 transition-opacity" onClick={() => { setShowUrlModal(false); navigate('/endpoints'); }}></div>
+
+            <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+              <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-medium text-snowflake-900">
+                    Endpoint Created Successfully!
+                  </h3>
+                  <button
+                    onClick={() => { setShowUrlModal(false); navigate('/endpoints'); }}
+                    className="text-snowflake-400 hover:text-snowflake-600"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                    <p className="text-sm text-green-800">
+                      <strong>{createdEndpoint.name}</strong> has been created successfully.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-snowflake-700 mb-1">
+                      Endpoint URL
+                    </label>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={createdEndpoint.url || ''}
+                        className="flex-1 px-3 py-2 border border-snowflake-300 rounded-md bg-snowflake-50 text-sm font-mono"
+                      />
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(createdEndpoint.url);
+                          toast.success('URL copied to clipboard!');
+                        }}
+                        className="px-3 py-2 text-sm font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded-md hover:bg-snowflake-50 flex items-center"
+                      >
+                        <Copy className="h-4 w-4 mr-1" />
+                        Copy
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-snowflake-500">
+                      Use this URL with an API Key (Authorization header or ?token= query parameter)
+                    </p>
+                  </div>
+
+                  <div className="flex justify-end space-x-3 pt-4">
+                    <button
+                      onClick={() => { setShowUrlModal(false); navigate(`/endpoints/${createdEndpoint.id}`); }}
+                      className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700"
+                    >
+                      View Endpoint
+                    </button>
+                    <button
+                      onClick={() => { setShowUrlModal(false); navigate('/endpoints'); }}
+                      className="px-4 py-2 text-sm font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded-md hover:bg-snowflake-50"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -16,16 +16,9 @@ const logger = winston.createLogger({
   format: logFormat,
   defaultMeta: { service: 'snowflake-api-proxy' },
   transports: [
-    // Write all logs with level 'error' and below to error.log
+    // Write all logs to a single file
     new winston.transports.File({
-      filename: path.join(__dirname, '../../logs/error.log'),
-      level: 'error',
-      maxsize: 5242880, // 5MB
-      maxFiles: 5
-    }),
-    // Write all logs to combined.log
-    new winston.transports.File({
-      filename: path.join(__dirname, '../../logs/combined.log'),
+      filename: path.join(__dirname, '../../logs/backend.log'),
       maxsize: 5242880, // 5MB
       maxFiles: 5
     })
@@ -36,8 +29,16 @@ const logger = winston.createLogger({
 if (process.env.NODE_ENV !== 'production') {
   logger.add(new winston.transports.Console({
     format: winston.format.combine(
+      winston.format.timestamp({ format: 'HH:mm:ss' }),
       winston.format.colorize(),
-      winston.format.simple()
+      winston.format.printf(({ timestamp, level, message, ...meta }) => {
+        let msg = `${timestamp} [${level}] ${message}`;
+        // Add key metadata
+        if (meta.requestId) msg += ` [${meta.requestId}]`;
+        if (meta.error) msg += ` - Error: ${meta.error}`;
+        if (meta.username) msg += ` - User: ${meta.username}`;
+        return msg;
+      })
     )
   }));
 }

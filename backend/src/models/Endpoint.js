@@ -10,7 +10,12 @@ class Endpoint {
     this.method = data.method || 'GET'; // HTTP method
     this.parameters = data.parameters || []; // Parameter definitions
     this.rateLimit = data.rateLimit || 100; // Requests per minute
-    this.isActive = data.isActive !== undefined ? data.isActive : true;
+    this.status = data.status || data.STATUS || 'draft'; // 'active', 'draft', 'suspended'
+    // Backward compatibility: derive status from isActive if status not provided
+    if (!data.status && !data.STATUS) {
+      this.status = data.isActive === false ? 'suspended' : 'active';
+    }
+    this.isActive = data.isActive !== undefined ? data.isActive : (this.status === 'active');
     this.createdAt = data.createdAt || new Date().toISOString();
     this.updatedAt = data.updatedAt || new Date().toISOString();
     this.createdBy = data.createdBy;
@@ -48,6 +53,10 @@ class Endpoint {
       errors.push('Parameters must be an array');
     }
 
+    if (this.status && !['active', 'draft', 'suspended'].includes(this.status)) {
+      errors.push('Status must be one of: active, draft, suspended');
+    }
+
     return errors;
   }
 
@@ -61,7 +70,8 @@ class Endpoint {
       method: this.method,
       parameters: this.parameters,
       rateLimit: this.rateLimit,
-      isActive: this.isActive,
+      status: this.status,
+      isActive: this.isActive, // Keep for backward compatibility
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
       createdBy: this.createdBy,
@@ -76,7 +86,7 @@ class Endpoint {
   update(data) {
     const allowedFields = [
       'name', 'description', 'type', 'target', 'method', 
-      'parameters', 'rateLimit', 'isActive', 'metadata'
+      'parameters', 'rateLimit', 'status', 'isActive', 'metadata'
     ];
 
     allowedFields.forEach(field => {
