@@ -1,0 +1,180 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+# Keep root package-lock.json for version control
+!package-lock.json
+!backend/package-lock.json
+!frontend/package-lock.json
+
+# Build outputs
+dist/
+build/
+frontend/build/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+backend/logs/
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+snowflake.log
+
+# Environment variables and secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.local
+
+# Configuration files with sensitive data
+config/snowflake.json
+# Keep example files
+!config/snowflake.example.json
+
+# Test coverage
+coverage/
+.nyc_output/
+*.lcov
+.istanbul/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.cache
+.cache/
+tmp/
+temp/
+
+# Deployment artifacts
+service-spec.yaml
+*.yaml.bak
+*.yml.bak
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# SSL certificates and keys
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+nginx/ssl/
+*.csr
+
+# Snowflake CLI configuration (may contain credentials)
+.snowflake/
+# But keep example configs if needed
+!.snowflake/config.toml.example
+
+# Jest
+.jest-cache/
+jest-cache/
+
+# TypeScript (if used)
+*.tsbuildinfo
+dist-ts/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variable files
+.env.test
+.env.production
+
+# parcel-bundler cache (https://parceljs.org/)
+.parcel-cache
+
+# Next.js (if ever used)
+.next/
+out/
+
+# Nuxt.js (if ever used)
+.nuxt/
+dist/
+
+# Gatsby files
+.cache/
+public
+
+# Storybook build outputs
+storybook-static
+
+# Temporary folders
+.tmp/
+.temp/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Generated files
+*.generated.*
+
+# Local development
+.local/
+
+# Deployment scripts output
+*.deploy.log
+deploy-*.log
+

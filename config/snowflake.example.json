@@ -1,0 +1,13 @@
+{
+  "account": "your-account.snowflakecomputing.com",
+  "username": "API_PROXY_SERVICE_USER",
+  "password": "ChangeThisPassword123!",
+  "warehouse": "API_PROXY_WH",
+  "database": "API_PROXY",
+  "schema": "APP",
+  "role": "API_PROXY_SERVICE_ROLE",
+  "region": "us-east-1",
+  "timeout": 30000,
+  "retryCount": 3,
+  "retryDelay": 1000
+}
