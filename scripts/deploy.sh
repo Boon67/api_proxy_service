@@ -67,6 +67,14 @@ parse_args() {
                 RECREATE_COMPUTE_POOL=true
                 shift
                 ;;
+            --check-endpoint|--check-endpoint-url)
+                CHECK_ENDPOINT_ONLY=true
+                shift
+                ;;
+            --debug-endpoint)
+                DEBUG_ENDPOINT=true
+                shift
+                ;;
             --help|-h)
                 show_help=true
                 shift
@@ -96,6 +104,8 @@ Options:
   -r, --role-mode MODE        Role mode: ACCOUNTADMIN, SYSADMIN, USERADMIN, or AUTO (default: AUTO)
                               AUTO uses SYSADMIN for objects and USERADMIN for users/roles
       --recreate-compute-pool Drop and recreate compute pool if it exists
+      --check-endpoint        Check if endpoint URL exists and exit (debug mode)
+      --debug-endpoint        Enable debug output for endpoint detection
   -h, --help                  Show this help message
   
   Note: These defaults align with sql/setup_service_account.sql and sql/create_tables.sql.
@@ -462,10 +472,13 @@ execute_sql_script() {
     # Check for expected errors that we can safely ignore:
     # 1. "USE ROLE" errors when switching to service role (expected - admin user doesn't have service role)
     # 2. "already exists" errors (expected - idempotent operations)
-    if echo "$EXEC_OUTPUT" | grep -qiE "USE ROLE.*is not assigned to the executing user|Requested role.*is not assigned"; then
+    # 3. "already exists" errors for constraints (expected - idempotent operations)
+    if echo "$EXEC_OUTPUT" | grep -qiE "USE ROLE.*is not assigned to the executing user|Requested role.*is not assigned|already exists|Constraint.*already exists"; then
         EXPECTED_ERROR=true
         # This is expected - the service role is for the service user, not the admin
+        if echo "$EXEC_OUTPUT" | grep -qiE "USE ROLE.*is not assigned"; then
         echo -e "${BLUE}ℹ️  Note: USE ROLE statement for service role is expected to fail (admin user doesn't have service role)${NC}"
+        fi
     fi
     
     if echo "$EXEC_OUTPUT" | grep -qiE "SQL compilation error|SQL execution error|syntax error"; then
@@ -576,6 +589,111 @@ create_snowflake_resources() {
         echo -e "${RED}❌ SQL script execution failed${NC}"
         echo -e "${YELLOW}   Check the error messages above and verify your permissions${NC}"
         exit 1
+    fi
+    
+    # Verify and ensure role is granted to user
+    echo -e "${BLUE}Verifying role assignment to user...${NC}"
+    ROLE_GRANTED=$(snow sql -q "USE ROLE ${USER_ROLE}; SHOW GRANTS TO USER ${SERVICE_USER_NAME}" 2>/dev/null | grep -i "${SERVICE_ROLE_NAME}" || echo "")
+    if [ -z "$ROLE_GRANTED" ]; then
+        echo -e "${YELLOW}⚠️  Role ${SERVICE_ROLE_NAME} not found assigned to user ${SERVICE_USER_NAME}${NC}"
+        echo -e "${BLUE}   Attempting to grant role to user...${NC}"
+        if snow sql -q "USE ROLE ${USER_ROLE}; GRANT ROLE ${SERVICE_ROLE_NAME} TO USER ${SERVICE_USER_NAME}" 2>&1; then
+            echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} granted to user ${SERVICE_USER_NAME}${NC}"
+            # Also set as default role
+            snow sql -q "USE ROLE ${USER_ROLE}; ALTER USER ${SERVICE_USER_NAME} SET DEFAULT_ROLE = '${SERVICE_ROLE_NAME}'" 2>&1 || true
+        else
+            echo -e "${YELLOW}⚠️  Failed to grant role. Trying with ACCOUNTADMIN...${NC}"
+            if snow sql -q "USE ROLE ACCOUNTADMIN; GRANT ROLE ${SERVICE_ROLE_NAME} TO USER ${SERVICE_USER_NAME}" 2>&1; then
+                echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} granted to user ${SERVICE_USER_NAME} (via ACCOUNTADMIN)${NC}"
+                snow sql -q "USE ROLE ACCOUNTADMIN; ALTER USER ${SERVICE_USER_NAME} SET DEFAULT_ROLE = '${SERVICE_ROLE_NAME}'" 2>&1 || true
+            else
+                echo -e "${RED}❌ Failed to grant role to user. Manual intervention may be required.${NC}"
+                echo -e "${BLUE}   Run: USE ROLE ACCOUNTADMIN; GRANT ROLE ${SERVICE_ROLE_NAME} TO USER ${SERVICE_USER_NAME};${NC}"
+            fi
+        fi
+    else
+        echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} is already assigned to user ${SERVICE_USER_NAME}${NC}"
+    fi
+    
+    # Create application tables (ENDPOINTS, API_KEYS, etc.)
+    echo -e "${BLUE}Creating application tables...${NC}"
+    CREATE_TABLES_SQL="${SQL_DIR}/create_tables.sql"
+    
+    if [ ! -f "$CREATE_TABLES_SQL" ]; then
+        echo -e "${RED}❌ SQL create tables script not found: ${CREATE_TABLES_SQL}${NC}"
+        exit 1
+    fi
+    
+    if execute_sql_script "$CREATE_TABLES_SQL"; then
+        echo -e "${GREEN}✅ Application tables created successfully${NC}"
+    else
+        echo -e "${RED}❌ Failed to create application tables${NC}"
+        echo -e "${YELLOW}   Check the error messages above and verify your permissions${NC}"
+        exit 1
+    fi
+    
+    # Verify and ensure permissions are granted on API_KEYS table (after tables are created)
+    echo -e "${BLUE}Verifying permissions on API_KEYS table...${NC}"
+    API_KEYS_PERMS=$(snow sql -q "USE ROLE ACCOUNTADMIN; SHOW GRANTS ON TABLE ${DATABASE}.${SCHEMA}.API_KEYS TO ROLE ${SERVICE_ROLE_NAME}" 2>/dev/null | grep -i "INSERT" || echo "")
+    if [ -z "$API_KEYS_PERMS" ]; then
+        echo -e "${YELLOW}⚠️  INSERT permission not found on API_KEYS table for role ${SERVICE_ROLE_NAME}${NC}"
+        echo -e "${BLUE}   Granting INSERT, UPDATE, DELETE permissions on API_KEYS table...${NC}"
+        if snow sql -q "USE ROLE ACCOUNTADMIN; GRANT INSERT, UPDATE, DELETE ON TABLE ${DATABASE}.${SCHEMA}.API_KEYS TO ROLE ${SERVICE_ROLE_NAME}" 2>&1; then
+            echo -e "${GREEN}✅ Permissions granted on API_KEYS table${NC}"
+        else
+            echo -e "${RED}❌ Failed to grant permissions on API_KEYS table. Manual intervention may be required.${NC}"
+            echo -e "${BLUE}   Run: USE ROLE ACCOUNTADMIN; GRANT INSERT, UPDATE, DELETE ON TABLE ${DATABASE}.${SCHEMA}.API_KEYS TO ROLE ${SERVICE_ROLE_NAME};${NC}"
+        fi
+    else
+        echo -e "${GREEN}✅ Permissions verified on API_KEYS table${NC}"
+    fi
+    
+    # Create admin user (username: admin, password: admin123)
+    echo -e "${BLUE}Creating admin user (admin/admin123)...${NC}"
+    CREATE_ADMIN_USER_SQL="${SQL_DIR}/create_admin_user.sql"
+    
+    if [ ! -f "$CREATE_ADMIN_USER_SQL" ]; then
+        echo -e "${RED}❌ Admin user SQL script not found: ${CREATE_ADMIN_USER_SQL}${NC}"
+        echo -e "${YELLOW}   Skipping admin user creation${NC}"
+    else
+        if execute_sql_script "$CREATE_ADMIN_USER_SQL"; then
+            echo -e "${GREEN}✅ Admin user created successfully${NC}"
+            echo -e "${BLUE}   Username: admin${NC}"
+            echo -e "${BLUE}   Password: admin123${NC}"
+            echo -e "${YELLOW}   ⚠️  Please change the default password after first login${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Could not create admin user via script${NC}"
+            echo -e "${BLUE}   The admin user may have already been created by create_tables.sql${NC}"
+            echo -e "${BLUE}   Verifying admin user exists...${NC}"
+            ADMIN_USER_EXISTS=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SELECT COUNT(*) AS CNT FROM USERS WHERE USERNAME = 'admin'" 2>/dev/null | grep -E "^[[:space:]]*[0-9]+" | head -1 | tr -d '[:space:]' || echo "0")
+            if [ "$ADMIN_USER_EXISTS" != "0" ] && [ -n "$ADMIN_USER_EXISTS" ]; then
+                echo -e "${GREEN}✅ Admin user already exists${NC}"
+                echo -e "${BLUE}   Username: admin${NC}"
+                echo -e "${BLUE}   Password: admin123${NC}"
+            else
+                echo -e "${RED}❌ Admin user does not exist${NC}"
+                echo -e "${BLUE}   You may need to create it manually: snow sql -f ${CREATE_ADMIN_USER_SQL}${NC}"
+            fi
+        fi
+    fi
+    
+    # Create sample tags and endpoint for testing
+    echo -e "${BLUE}Creating sample data (tags and test endpoint)...${NC}"
+    CREATE_SAMPLE_DATA_SQL="${SQL_DIR}/create_sample_data.sql"
+    
+    if [ ! -f "$CREATE_SAMPLE_DATA_SQL" ]; then
+        echo -e "${YELLOW}⚠️  Sample data SQL script not found: ${CREATE_SAMPLE_DATA_SQL}${NC}"
+        echo -e "${BLUE}   Skipping sample data creation${NC}"
+    else
+        if execute_sql_script "$CREATE_SAMPLE_DATA_SQL"; then
+            echo -e "${GREEN}✅ Sample tags and test endpoint created successfully${NC}"
+            echo -e "${BLUE}   Created tags: Engineering, Sales, Marketing, Finance, Operations, HR, Legal, Product${NC}"
+            echo -e "${BLUE}   Created endpoint: 'Test Connection' (SELECT 1;)${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Could not create sample data${NC}"
+            echo -e "${BLUE}   Sample data can be created manually later by running:${NC}"
+            echo -e "${BLUE}   snow sql -f ${CREATE_SAMPLE_DATA_SQL}${NC}"
+        fi
     fi
     
     # Verify key resources were created
@@ -1090,7 +1208,6 @@ deploy_service() {
     
     # Check if service already exists
     SERVICE_EXISTS=false
-    # Try to get service status - if it succeeds, service exists
     if snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} >/dev/null 2>&1; then
         SERVICE_EXISTS=true
     elif snow spcs service list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -qi "${SERVICE_NAME}"; then
@@ -1098,59 +1215,28 @@ deploy_service() {
     fi
     
     if [ "$SERVICE_EXISTS" = true ]; then
-        echo -e "${BLUE}Service ${SERVICE_NAME} already exists. Stopping, upgrading, and restarting...${NC}"
-        
-        # Suspend service to stop containers
-        echo -e "${BLUE}Suspending service to stop containers...${NC}"
-        if snow spcs service suspend ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>&1; then
-            echo -e "${GREEN}✅ Service suspended${NC}"
-            # Wait a moment for containers to stop
-            sleep 5
-        else
-            echo -e "${YELLOW}⚠️  Could not suspend service (may already be suspended or not running)${NC}"
-        fi
-        
-        # Upgrade service with new spec (this updates image references)
-        echo -e "${BLUE}Upgrading service with new image versions...${NC}"
-        if snow spcs service upgrade ${SERVICE_NAME} \
-            --spec-path service-spec.yaml \
-            --database ${DATABASE} \
-            --schema ${SCHEMA} 2>&1; then
-            echo -e "${GREEN}✅ Service spec upgraded${NC}"
-        else
-            echo -e "${YELLOW}⚠️  Upgrade failed. Dropping and recreating service...${NC}"
-            if snow spcs service drop ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>&1; then
-                echo -e "${BLUE}Dropped existing service, creating new one...${NC}"
-                SERVICE_EXISTS=false
-            else
-                echo -e "${RED}❌ Failed to drop service${NC}"
-                exit 1
-            fi
-        fi
-        
-        # Resume service to start containers with new images
-        if [ "$SERVICE_EXISTS" = true ]; then
-            echo -e "${BLUE}Resuming service to start containers with new images...${NC}"
-            if snow spcs service resume ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>&1; then
-                echo -e "${GREEN}✅ Service resumed - containers will pull new images${NC}"
-            else
-                echo -e "${YELLOW}⚠️  Service may already be running or resume failed${NC}"
-            fi
-        fi
-    fi
-    
-    if [ "$SERVICE_EXISTS" = false ]; then
+        echo -e "${GREEN}✅ Service ${SERVICE_NAME} already exists - skipping creation${NC}"
+        echo -e "${BLUE}   Using existing service${NC}"
+    else
         # Create new service
         echo -e "${BLUE}Creating new service ${SERVICE_NAME}...${NC}"
         # Set database context before creating service
         snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}" > /dev/null 2>&1
-        if snow spcs service create ${SERVICE_NAME} \
+        
+        CREATE_OUTPUT=$(snow spcs service create ${SERVICE_NAME} \
             --compute-pool ${COMPUTE_POOL} \
             --spec-path service-spec.yaml \
             --database ${DATABASE} \
-            --schema ${SCHEMA} 2>&1; then
+            --schema ${SCHEMA} 2>&1)
+        CREATE_EXIT=$?
+        
+        # Check if the error is "already exists" - this is acceptable
+        if echo "$CREATE_OUTPUT" | grep -qiE "already exists"; then
+            echo -e "${GREEN}✅ Service ${SERVICE_NAME} already exists${NC}"
+        elif [ $CREATE_EXIT -eq 0 ]; then
             echo -e "${GREEN}✅ Service created successfully${NC}"
         else
+            echo "$CREATE_OUTPUT"
             echo -e "${RED}❌ Failed to create service${NC}"
             exit 1
         fi
@@ -1162,6 +1248,84 @@ deploy_service() {
     wait_for_endpoint
 }
 
+# Check endpoint URL only (debug mode)
+check_endpoint_only() {
+    echo -e "${YELLOW}🔍 Checking endpoint URL for service ${SERVICE_NAME}...${NC}"
+    
+    # Set defaults from environment if not provided
+    DATABASE=${DATABASE:-${SNOWFLAKE_DATABASE:-$DEFAULT_DATABASE}}
+    SCHEMA=${SCHEMA:-${SNOWFLAKE_SCHEMA:-$DEFAULT_SCHEMA}}
+    
+    echo -e "${BLUE}Database: ${DATABASE}${NC}"
+    echo -e "${BLUE}Schema: ${SCHEMA}${NC}"
+    echo -e "${BLUE}Service: ${SERVICE_NAME}${NC}"
+    echo ""
+    
+    # Run SHOW ENDPOINTS query as JSON
+    echo -e "${BLUE}Running: SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}${NC}"
+    ENDPOINT_JSON=$(snow sql --format json -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}" 2>&1)
+    
+    echo ""
+    echo -e "${BLUE}Raw JSON output:${NC}"
+    echo "$ENDPOINT_JSON" | head -50
+    echo ""
+    
+    # Check if JSON contains ingress_url with snowflakecomputing.app
+    # Extract ingress_url from JSON and check for snowflakecomputing.app
+    if echo "$ENDPOINT_JSON" | grep -qiE "snowflakecomputing\.app"; then
+        echo -e "${GREEN}✅ Found snowflakecomputing.app in output${NC}"
+        
+        # Extract ingress_url from JSON
+        # Prefer web-endpoint (port 80), fall back to api-endpoint (port 3001)
+        
+        # Try using jq if available (more reliable)
+        if command -v jq &> /dev/null; then
+            # The JSON structure has nested arrays - endpoints are in the array that contains objects with "name"
+            # Use recursive descent to find all objects, then select web-endpoint
+            INGRESS_URL=$(echo "$ENDPOINT_JSON" | jq -r '.. | objects | select(.name == "web-endpoint") | .ingress_url // empty' 2>/dev/null | head -1 || echo "")
+            if [ -z "$INGRESS_URL" ] || [ "$INGRESS_URL" = "null" ] || [ "$INGRESS_URL" = "" ]; then
+                # Fall back to api-endpoint only if web-endpoint not found
+                INGRESS_URL=$(echo "$ENDPOINT_JSON" | jq -r '.. | objects | select(.name == "api-endpoint") | .ingress_url // empty' 2>/dev/null | head -1 || echo "")
+            fi
+        else
+            # Fallback: extract using grep and sed - look for exact name "web-endpoint"
+            INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -i '"name"[[:space:]]*:[[:space:]]*"web-endpoint"' -A 15 | grep -i "ingress_url" | head -1 | sed -n 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || echo "")
+            if [ -z "$INGRESS_URL" ]; then
+                # Fall back to api-endpoint
+                INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -i '"name"[[:space:]]*:[[:space:]]*"api-endpoint"' -A 15 | grep -i "ingress_url" | head -1 | sed -n 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || echo "")
+            fi
+            
+            # If still empty, try extracting any ingress_url containing snowflakecomputing.app
+            if [ -z "$INGRESS_URL" ]; then
+                INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -oE '"ingress_url"[[:space:]]*:[[:space:]]*"[^"]*snowflakecomputing\.app[^"]*"' | sed 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -1 || echo "")
+            fi
+        fi
+        
+        if [ -n "$INGRESS_URL" ] && echo "$INGRESS_URL" | grep -qiE "snowflakecomputing\.app"; then
+            SERVICE_URL="http://${INGRESS_URL}"
+            echo -e "${GREEN}✅ Extracted ingress_url: ${INGRESS_URL}${NC}"
+            echo -e "${GREEN}✅ Service URL: ${SERVICE_URL}${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Found snowflakecomputing.app but could not extract complete ingress_url${NC}"
+            echo -e "${BLUE}   Attempting manual extraction...${NC}"
+            
+            # Try extracting the full domain from the JSON
+            DOMAIN=$(echo "$ENDPOINT_JSON" | grep -oE "[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
+            if [ -n "$DOMAIN" ]; then
+                SERVICE_URL="http://${DOMAIN}"
+                echo -e "${GREEN}✅ Extracted domain: ${DOMAIN}${NC}"
+                echo -e "${GREEN}✅ Service URL: ${SERVICE_URL}${NC}"
+            else
+                echo -e "${RED}❌ Could not extract domain${NC}"
+            fi
+        fi
+    else
+        echo -e "${RED}❌ Did not find snowflakecomputing.app in output${NC}"
+    fi
+    
+    exit 0
+}
+
 # Wait for service endpoint to be provisioned
 wait_for_endpoint() {
     echo -e "${YELLOW}⏳ Waiting for service endpoint to be provisioned...${NC}"
@@ -1171,106 +1335,106 @@ wait_for_endpoint() {
     SERVICE_URL=""
     
     while [ $ELAPSED -lt $MAX_WAIT ]; do
-        # Method 1: Try SQL query to get endpoint information (most reliable method)
-        if [ -z "$SERVICE_URL" ]; then
-            # Try to get endpoint from SQL - use qualified service name
-            # SHOW ENDPOINTS returns ingress_url which contains the endpoint URL
-            ENDPOINT_QUERY=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}" 2>/dev/null || echo "")
-            if [ -n "$ENDPOINT_QUERY" ]; then
-                # Extract URL from ingress_url column - URL may be split across lines in table format
-                # Look for the web-endpoint (port 80) URL as primary endpoint
-                # First, try to find web-endpoint line and extract URL parts
-                ENDPOINT_LINES=$(echo "$ENDPOINT_QUERY" | grep -A 10 "web-endpoint\|80.*true" | grep -iE "snowflakecomputing\.app" | head -5 || echo "")
-                if [ -n "$ENDPOINT_LINES" ]; then
-                    # Reconstruct URL from parts (removing line breaks and extra spaces)
-                    URL_PARTS=$(echo "$ENDPOINT_LINES" | tr -d '\n' | tr -s ' ' | grep -oE "[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-                    if [ -n "$URL_PARTS" ]; then
-                        SERVICE_URL="https://${URL_PARTS}"
+        # Primary method: Check if endpoint is provisioned using SHOW ENDPOINTS IN SERVICE
+        # Use JSON format for easier parsing
+        ENDPOINT_JSON=$(snow sql --format json -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}" 2>&1 || echo "")
+        
+        # Debug: Show raw output if debug flag is set
+        if [ "${DEBUG_ENDPOINT:-false}" = "true" ]; then
+            echo -e "${BLUE}DEBUG: SHOW ENDPOINTS JSON output:${NC}"
+            echo "$ENDPOINT_JSON" | head -50
+            echo -e "${BLUE}DEBUG: Checking for snowflakecomputing.app in ingress_url...${NC}"
+        fi
+        
+        if [ -n "$ENDPOINT_JSON" ]; then
+            # Check if JSON contains ingress_url with snowflakecomputing.app
+            HAS_INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -qiE "snowflakecomputing\.app" && echo "yes" || echo "no")
+            
+            if [ "${DEBUG_ENDPOINT:-false}" = "true" ]; then
+                echo -e "${BLUE}DEBUG: Found snowflakecomputing.app in output: ${HAS_INGRESS_URL}${NC}"
+            fi
+            
+            if [ "$HAS_INGRESS_URL" = "yes" ]; then
+                # Extract ingress_url from JSON
+                # Prefer web-endpoint (port 80), fall back to api-endpoint (port 3001)
+                
+                # Try using jq if available (more reliable)
+                if command -v jq &> /dev/null; then
+                    # The JSON structure has nested arrays - endpoints are in the array that contains objects with "name"
+                    # Use recursive descent to find all objects, then select web-endpoint
+                    INGRESS_URL=$(echo "$ENDPOINT_JSON" | jq -r '.. | objects | select(.name == "web-endpoint") | .ingress_url // empty' 2>/dev/null | head -1 || echo "")
+                    if [ -z "$INGRESS_URL" ] || [ "$INGRESS_URL" = "null" ] || [ "$INGRESS_URL" = "" ]; then
+                        # Fall back to api-endpoint only if web-endpoint not found
+                        INGRESS_URL=$(echo "$ENDPOINT_JSON" | jq -r '.. | objects | select(.name == "api-endpoint") | .ingress_url // empty' 2>/dev/null | head -1 || echo "")
                     fi
-                fi
-                # Fallback: try any endpoint URL pattern
-                if [ -z "$SERVICE_URL" ]; then
-                    URL_MATCH=$(echo "$ENDPOINT_QUERY" | grep -oE "[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-                    if [ -n "$URL_MATCH" ]; then
-                        SERVICE_URL="https://${URL_MATCH}"
+                else
+                    # Fallback: extract using grep and sed
+                    # Look for the JSON object with name "web-endpoint"
+                    INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -i '"name"[[:space:]]*:[[:space:]]*"web-endpoint"' -A 15 | grep -i "ingress_url" | head -1 | sed -n 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || echo "")
+                    if [ -z "$INGRESS_URL" ]; then
+                        # Fall back to api-endpoint
+                        INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -i '"name"[[:space:]]*:[[:space:]]*"api-endpoint"' -A 15 | grep -i "ingress_url" | head -1 | sed -n 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || echo "")
                     fi
-                fi
-            fi
-        fi
-        
-        # Method 2: Try parsing from service logs
-        if [ -z "$SERVICE_URL" ]; then
-            SERVICE_LOGS=$(snow spcs service logs ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -iE "endpoint|url|https://.*snowflakecomputing\.app" | head -5 || echo "")
-            if echo "$SERVICE_LOGS" | grep -qiE "https://.*snowflakecomputing\.app"; then
-                SERVICE_URL=$(echo "$SERVICE_LOGS" | grep -oE "https://[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-            fi
-        fi
-        
-        # Method 3: Try parsing service status output (may contain URL hints)
-        if [ -z "$SERVICE_URL" ]; then
-            SERVICE_STATUS=$(snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null || echo "")
-            # Check for URL patterns in status output
-            if echo "$SERVICE_STATUS" | grep -qiE "https://.*snowflakecomputing\.app|\.snowflakecomputing\.app"; then
-                SERVICE_URL=$(echo "$SERVICE_STATUS" | grep -oE "https://[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-            fi
-            # Also check for general http/https patterns
-            if [ -z "$SERVICE_URL" ] && echo "$SERVICE_STATUS" | grep -qi "https://\|http://"; then
-                SERVICE_URL=$(echo "$SERVICE_STATUS" | grep -oE "https?://[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-            fi
-        fi
-        
-        # Method 4: Try to discover endpoint by checking if service is READY and then try common patterns
-        if [ -z "$SERVICE_URL" ]; then
-            SERVICE_STATUS=$(snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null || echo "")
-            if echo "$SERVICE_STATUS" | grep -qi "READY.*Running"; then
-                # Service is ready, try to construct or discover endpoint
-                # Get account identifier for endpoint construction
-                if [ -z "$SNOWFLAKE_ACCOUNT" ]; then
-                    SNOWFLAKE_ACCOUNT=$(snow connection show 2>/dev/null | grep -i account | head -1 | sed 's/.*account[[:space:]]*:[[:space:]]*//i' || echo "")
+                    
+                    # If still empty, try extracting any ingress_url containing snowflakecomputing.app
+                    if [ -z "$INGRESS_URL" ]; then
+                        INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -oE '"ingress_url"[[:space:]]*:[[:space:]]*"[^"]*snowflakecomputing\.app[^"]*"' | sed 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -1 || echo "")
+                    fi
                 fi
                 
-                # Convert account to lowercase and construct potential endpoint pattern
-                if [ -n "$SNOWFLAKE_ACCOUNT" ]; then
-                    ACCOUNT_LOWER=$(echo "$SNOWFLAKE_ACCOUNT" | tr '[:upper:]' '[:lower:]' | sed 's/\.snowflakecomputing\.com//' | sed 's/\.registry\.snowflakecomputing\.com//')
-                    # Try SHOW ENDPOINTS with qualified service name
-                    ENDPOINT_SQL=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}" 2>/dev/null || echo "")
-                    if [ -n "$ENDPOINT_SQL" ]; then
-                        # Extract URL parts and reconstruct
-                        URL_MATCH=$(echo "$ENDPOINT_SQL" | grep -oE "[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-                        if [ -n "$URL_MATCH" ]; then
-                            SERVICE_URL="https://${URL_MATCH}"
+                if [ "${DEBUG_ENDPOINT:-false}" = "true" ]; then
+                    echo -e "${BLUE}DEBUG: Extracted ingress_url: [${INGRESS_URL}]${NC}"
+                fi
+                
+                if [ -n "$INGRESS_URL" ] && [ "$INGRESS_URL" != "null" ] && echo "$INGRESS_URL" | grep -qiE "snowflakecomputing\.app"; then
+                    SERVICE_URL="http://${INGRESS_URL}"
+                    if [ "${DEBUG_ENDPOINT:-false}" = "true" ]; then
+                        echo -e "${BLUE}DEBUG: Service URL set to: ${SERVICE_URL}${NC}"
+                    fi
+                else
+                    # Fallback: extract domain directly from JSON text
+                    DOMAIN_ONLY=$(echo "$ENDPOINT_JSON" | grep -oE "[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
+                    if [ -n "$DOMAIN_ONLY" ]; then
+                        SERVICE_URL="http://${DOMAIN_ONLY}"
+                        if [ "${DEBUG_ENDPOINT:-false}" = "true" ]; then
+                            echo -e "${BLUE}DEBUG: Fallback - extracted domain: ${DOMAIN_ONLY}${NC}"
+                            echo -e "${BLUE}DEBUG: Service URL set to: ${SERVICE_URL}${NC}"
+                        fi
+                    else
+                        if [ "${DEBUG_ENDPOINT:-false}" = "true" ]; then
+                            echo -e "${YELLOW}DEBUG: Could not extract ingress_url from JSON${NC}"
                         fi
                     fi
                 fi
+                
+                # If we found a valid URL, verify and exit
+                if [ -n "$SERVICE_URL" ] && [[ "$SERVICE_URL" =~ \.snowflakecomputing\.app ]]; then
+                    # Test if URL is accessible
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${SERVICE_URL}/health" 2>/dev/null || echo "000")
+                    
+                    # Accept 200, 301/302 (redirects), or 404 (endpoint exists but health route may differ) as "accessible"
+                    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "404" ]; then
+                        echo -e "${GREEN}✅ Endpoint provisioned and accessible!${NC}"
+                        echo -e "${GREEN}🌐 Service URL: ${SERVICE_URL}${NC}"
+                        echo -e "${BLUE}   Frontend: ${SERVICE_URL}${NC}"
+                        echo -e "${BLUE}   Backend API: ${SERVICE_URL}/api${NC}"
+                        echo -e "${BLUE}   Health Check: ${SERVICE_URL}/health${NC}"
+                        export SERVICE_URL
+                        return 0
+                    elif [ "$HTTP_CODE" = "000" ]; then
+                        # URL found but not yet accessible - continue waiting
+                        echo -e "${BLUE}   Endpoint URL detected in INGRESS_URL: ${SERVICE_URL}${NC}"
+                        echo -e "${BLUE}   Still waiting for endpoint to become accessible...${NC}"
+                    fi
+                fi
             fi
         fi
         
-        # Method 5: Try to get from service info using describe or info commands
-        if [ -z "$SERVICE_URL" ]; then
-            # Try different Snow CLI commands that might return endpoint info
-            SERVICE_INFO=$(snow spcs service describe ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null || \
-                          snow spcs service info ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null || echo "")
-            if echo "$SERVICE_INFO" | grep -qiE "https://.*snowflakecomputing\.app"; then
-                SERVICE_URL=$(echo "$SERVICE_INFO" | grep -oE "https://[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-            fi
-        fi
-        
-        # Check if we have a valid URL
-        if [ -n "$SERVICE_URL" ] && [ "$SERVICE_URL" != "NULL" ] && [[ "$SERVICE_URL" =~ ^https://.*\.snowflakecomputing\.app ]]; then
-            # Normalize URL (remove trailing slash if present, ensure https://)
-            SERVICE_URL=$(echo "$SERVICE_URL" | sed 's|/$||' | sed 's|^http://|https://|')
-            echo -e "${GREEN}✅ Endpoint provisioned!${NC}"
-            echo -e "${GREEN}🌐 Service URL: ${SERVICE_URL}${NC}"
-            echo -e "${BLUE}   Frontend: ${SERVICE_URL}${NC}"
-            echo -e "${BLUE}   Backend API: ${SERVICE_URL}/api${NC}"
-            echo -e "${BLUE}   Health Check: ${SERVICE_URL}/health${NC}"
-            export SERVICE_URL
-            return 0
-        fi
         
         # Show progress
         if [ $((ELAPSED % 30)) -eq 0 ]; then
-            echo -e "${BLUE}   Still waiting... (${ELAPSED}s elapsed)${NC}"
+            echo -e "${BLUE}   Still waiting for endpoint provisioning... (${ELAPSED}s elapsed)${NC}"
+            echo -e "${BLUE}   Checking SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME} for INGRESS_URL...${NC}"
             # Show service status for debugging
             SERVICE_STATUS=$(snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -i "status\|running" | head -2 || echo "")
             if [ -n "$SERVICE_STATUS" ]; then
@@ -1282,39 +1446,72 @@ wait_for_endpoint() {
         ELAPSED=$((ELAPSED + 5))
     done
     
-    # Final comprehensive attempt with all methods
-    echo -e "${BLUE}Making final attempt to discover endpoint...${NC}"
+    # Final attempt: Use SHOW ENDPOINTS IN SERVICE to check for provisioned endpoint
+    echo -e "${BLUE}Making final attempt using SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}...${NC}"
     
-    # Try SQL query with qualified service name (most reliable)
-    ENDPOINT_SQL=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}" 2>/dev/null || echo "")
-    if [ -n "$ENDPOINT_SQL" ]; then
-        # Extract URL from ingress_url column - reconstruct from parts if split across lines
-        URL_MATCH=$(echo "$ENDPOINT_SQL" | grep -oE "[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-        if [ -n "$URL_MATCH" ]; then
-            SERVICE_URL="https://${URL_MATCH}"
+    # Use JSON format for easier parsing
+    ENDPOINT_JSON=$(snow sql --format json -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}" 2>&1 || echo "")
+    if [ -n "$ENDPOINT_JSON" ]; then
+        # Check if JSON contains ingress_url with snowflakecomputing.app
+        if echo "$ENDPOINT_JSON" | grep -qiE "snowflakecomputing\.app"; then
+            # Extract ingress_url from JSON
+            # Prefer web-endpoint (port 80), fall back to api-endpoint (port 3001)
+            
+            # Try using jq if available (more reliable)
+            if command -v jq &> /dev/null; then
+                # The JSON structure has nested arrays - endpoints are in the array that contains objects with "name"
+                # Use recursive descent to find all objects, then select web-endpoint
+                INGRESS_URL=$(echo "$ENDPOINT_JSON" | jq -r '.. | objects | select(.name == "web-endpoint") | .ingress_url // empty' 2>/dev/null | head -1 || echo "")
+                if [ -z "$INGRESS_URL" ] || [ "$INGRESS_URL" = "null" ] || [ "$INGRESS_URL" = "" ]; then
+                    # Fall back to api-endpoint only if web-endpoint not found
+                    INGRESS_URL=$(echo "$ENDPOINT_JSON" | jq -r '.. | objects | select(.name == "api-endpoint") | .ingress_url // empty' 2>/dev/null | head -1 || echo "")
+                fi
+            else
+                # Fallback: extract using grep and sed - look for exact name "web-endpoint"
+                INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -i '"name"[[:space:]]*:[[:space:]]*"web-endpoint"' -A 15 | grep -i "ingress_url" | head -1 | sed -n 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || echo "")
+                if [ -z "$INGRESS_URL" ]; then
+                    # Fall back to api-endpoint
+                    INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -i '"name"[[:space:]]*:[[:space:]]*"api-endpoint"' -A 15 | grep -i "ingress_url" | head -1 | sed -n 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || echo "")
+                fi
+                
+                # If still empty, try extracting any ingress_url containing snowflakecomputing.app
+                if [ -z "$INGRESS_URL" ]; then
+                    INGRESS_URL=$(echo "$ENDPOINT_JSON" | grep -oE '"ingress_url"[[:space:]]*:[[:space:]]*"[^"]*snowflakecomputing\.app[^"]*"' | sed 's/.*"ingress_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | head -1 || echo "")
+                fi
+            fi
+            
+            if [ -n "$INGRESS_URL" ] && [ "$INGRESS_URL" != "null" ] && echo "$INGRESS_URL" | grep -qiE "snowflakecomputing\.app"; then
+                SERVICE_URL="http://${INGRESS_URL}"
+            else
+                # Fallback: extract domain directly from JSON text
+                DOMAIN_ONLY=$(echo "$ENDPOINT_JSON" | grep -oE "[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
+                if [ -n "$DOMAIN_ONLY" ]; then
+                    SERVICE_URL="http://${DOMAIN_ONLY}"
+                fi
+            fi
+        else
+            echo -e "${YELLOW}⚠️  Endpoint not yet provisioned - INGRESS_URL does not contain .snowflakecomputing.app${NC}"
         fi
     fi
     
-    # Try logs
-    if [ -z "$SERVICE_URL" ]; then
-        SERVICE_LOGS=$(snow spcs service logs ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -iE "endpoint|https://.*snowflakecomputing\.app" | tail -10 || echo "")
-        if echo "$SERVICE_LOGS" | grep -qiE "https://.*snowflakecomputing\.app"; then
-            SERVICE_URL=$(echo "$SERVICE_LOGS" | grep -oE "https://[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-        fi
-    fi
-    
-    # Try status output one more time
-    if [ -z "$SERVICE_URL" ]; then
-        SERVICE_STATUS=$(snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null || echo "")
-        if echo "$SERVICE_STATUS" | grep -qiE "https://.*snowflakecomputing\.app"; then
-            SERVICE_URL=$(echo "$SERVICE_STATUS" | grep -oE "https://[a-zA-Z0-9.-]+\.snowflakecomputing\.app" | head -1 || echo "")
-        fi
-    fi
-    
-    if [ -n "$SERVICE_URL" ] && [ "$SERVICE_URL" != "NULL" ] && [[ "$SERVICE_URL" =~ ^https://.*\.snowflakecomputing\.app ]]; then
-        SERVICE_URL=$(echo "$SERVICE_URL" | sed 's|/$||' | sed 's|^http://|https://|')
+    if [ -n "$SERVICE_URL" ] && [ "$SERVICE_URL" != "NULL" ] && [[ "$SERVICE_URL" =~ ^https?://.*\.snowflakecomputing\.app ]]; then
         echo -e "${GREEN}✅ Endpoint provisioned!${NC}"
         echo -e "${GREEN}🌐 Service URL: ${SERVICE_URL}${NC}"
+        
+        # Test accessibility one more time
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${SERVICE_URL}/health" 2>/dev/null || echo "000")
+        if [ "$HTTP_CODE" = "200" ]; then
+            echo -e "${GREEN}✅ Health endpoint is accessible${NC}"
+        elif [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
+            echo -e "${GREEN}✅ Endpoint is accessible (HTTP ${HTTP_CODE} redirect)${NC}"
+        elif [ "$HTTP_CODE" = "404" ]; then
+            echo -e "${YELLOW}⚠️  Endpoint accessible but /health route may not exist (HTTP 404)${NC}"
+        elif [ "$HTTP_CODE" = "000" ]; then
+            echo -e "${YELLOW}⚠️  Endpoint detected but connection failed (may still be starting)${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Endpoint detected but returned HTTP ${HTTP_CODE}${NC}"
+        fi
+        
         export SERVICE_URL
         return 0
     else
@@ -1323,8 +1520,10 @@ wait_for_endpoint() {
         echo -e "${BLUE}📋 Manual steps to find endpoint:${NC}"
         echo -e "${BLUE}   1. Check service logs: snow spcs service logs ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
         echo -e "${BLUE}   2. Check service status: snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
-        echo -e "${BLUE}   3. Query in Snowflake: SELECT SYSTEM\$GET_SERVICE_URL('${SERVICE_NAME}')${NC}"
-        echo -e "${BLUE}   4. Check Snowflake UI for the service endpoint${NC}"
+        echo -e "${BLUE}   3. Query in Snowflake: SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}${NC}"
+        echo -e "${BLUE}   4. Query in Snowflake: SELECT SYSTEM\$GET_SERVICE_URL('${DATABASE}.${SCHEMA}.${SERVICE_NAME}')${NC}"
+        echo -e "${BLUE}   5. Check Snowflake UI for the service endpoint${NC}"
+        echo -e "${BLUE}   6. Try the URL manually: http://bbcmn2pb-sfsenorthamerica-tboon-aws2.snowflakecomputing.app${NC}"
         return 1
     fi
 }
@@ -1372,6 +1571,11 @@ cleanup() {
 main() {
     # Parse command-line arguments first
     parse_args "$@"
+    
+    # If --check-endpoint flag is set, only check endpoint and exit
+    if [ "${CHECK_ENDPOINT_ONLY:-false}" = "true" ]; then
+        check_endpoint_only
+    fi
     
     # Display configuration
     show_config

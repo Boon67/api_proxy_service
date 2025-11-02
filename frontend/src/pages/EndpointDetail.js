@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from 'react-query';
 import { Server, Edit, Trash2, Play, Copy, ExternalLink } from 'lucide-react';
 import { apiService } from '../services/api';
 import TestEndpointModal from '../components/TestEndpointModal';
+import ConfirmationModal from '../components/ConfirmationModal';
 import toast from 'react-hot-toast';
 
 const EndpointDetail = () => {
@@ -11,6 +12,7 @@ const EndpointDetail = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [testModalOpen, setTestModalOpen] = useState(false);
+  const [deleteConfirmModal, setDeleteConfirmModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const { data: endpoint, isLoading, error } = useQuery(
     ['endpoint', id],
@@ -39,11 +41,36 @@ const EndpointDetail = () => {
 
   const endpointData = endpoint.data;
 
-  const handleDelete = async () => {
-    if (!window.confirm(`Are you sure you want to delete the endpoint "${endpointData.name}"?\n\nThis action cannot be undone and will also revoke any associated API keys.`)) {
-      return;
+  // Helper function to get the correct endpoint URL based on environment
+  const getCorrectEndpointUrl = (url) => {
+    if (!url) return url;
+    
+    if (typeof window !== 'undefined') {
+      const isLocalhost = window.location.hostname === 'localhost' || 
+                         window.location.hostname === '127.0.0.1' ||
+                         window.location.hostname.includes('localhost');
+      
+      if (!isLocalhost) {
+        // Replace the base URL with the current window origin
+        // Extract the path from the endpoint URL (everything after /api/proxy/)
+        const urlMatch = url.match(/\/api\/proxy\/(.+)$/);
+        if (urlMatch) {
+          // Use current window origin and rebuild the URL
+          return `${window.location.origin}/api/proxy/${urlMatch[1]}`;
+        }
+      }
     }
+    
+    return url;
+  };
 
+  const displayUrl = getCorrectEndpointUrl(endpointData.url);
+
+  const handleDeleteClick = () => {
+    setDeleteConfirmModal(true);
+  };
+
+  const handleDeleteConfirm = async () => {
     setIsDeleting(true);
     try {
       const response = await apiService.deleteEndpoint(id);
@@ -61,6 +88,7 @@ const EndpointDetail = () => {
       toast.error(error.response?.data?.error || 'An error occurred while deleting the endpoint');
     } finally {
       setIsDeleting(false);
+      setDeleteConfirmModal(false);
     }
   };
 
@@ -70,7 +98,14 @@ const EndpointDetail = () => {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold text-snowflake-900">{endpointData.name}</h1>
-          <p className="mt-1 text-sm text-snowflake-600">
+          <div className="mt-2 flex items-center justify-between text-sm text-snowflake-600">
+            <span><span className="font-medium text-snowflake-700">Type:</span> {endpointData.type || 'N/A'}</span>
+            <div className="flex items-center gap-4">
+              <span><span className="font-medium text-snowflake-700">Method:</span> {endpointData.method || 'GET'}</span>
+              <span><span className="font-medium text-snowflake-700">Rate Limit:</span> {endpointData.rateLimit || 0}/min</span>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-snowflake-600">
             {endpointData.description || 'No description'}
           </p>
         </div>
@@ -90,7 +125,7 @@ const EndpointDetail = () => {
             Edit
           </a>
           <button 
-            onClick={handleDelete}
+            onClick={handleDeleteClick}
             disabled={isDeleting}
             className="btn btn-danger btn-md"
           >
@@ -151,18 +186,18 @@ const EndpointDetail = () => {
 
         <div className="bg-white rounded-lg border border-snowflake-200 p-6">
           <h3 className="text-lg font-medium text-snowflake-900 mb-4">Endpoint URL</h3>
-          {endpointData.url ? (
+          {displayUrl ? (
             <div className="space-y-2">
               <div className="flex items-center space-x-2">
                 <input
                   type="text"
                   readOnly
-                  value={endpointData.url}
+                  value={displayUrl}
                   className="flex-1 px-3 py-2 border border-snowflake-300 rounded-md bg-snowflake-50 text-sm font-mono"
                 />
                 <button
                   onClick={() => {
-                    navigator.clipboard.writeText(endpointData.url);
+                    navigator.clipboard.writeText(displayUrl);
                     toast.success('URL copied to clipboard!');
                   }}
                   className="px-3 py-2 text-sm font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded-md hover:bg-snowflake-50 flex items-center"
@@ -171,7 +206,7 @@ const EndpointDetail = () => {
                   <Copy className="h-4 w-4" />
                 </button>
                 <a
-                  href={endpointData.url}
+                  href={displayUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="px-3 py-2 text-sm font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded-md hover:bg-snowflake-50 flex items-center"
@@ -181,13 +216,135 @@ const EndpointDetail = () => {
                 </a>
               </div>
               <p className="text-xs text-snowflake-500">
-                Use this URL with an API Key in the Authorization header or as a ?token= query parameter
+                Use this URL with an API Key in the X-API-Key header or as a ?API_KEY= query parameter
               </p>
             </div>
           ) : (
             <p className="text-sm text-snowflake-500">URL not available</p>
           )}
         </div>
+
+        {/* Sample Code */}
+        {displayUrl && (
+          <div className="bg-white rounded-lg border border-snowflake-200 p-6">
+            <h3 className="text-lg font-medium text-snowflake-900 mb-4">Sample Code</h3>
+            {(() => {
+              const endpointUrl = displayUrl;
+              const apiKeyPlaceholder = 'YOUR_API_KEY';
+              
+              // Generate sample commands with placeholder
+              const curlWithHeader = `curl -X ${endpointData.method || 'GET'} "${endpointUrl}" \\
+  -H "X-API-Key: ${apiKeyPlaceholder}"`;
+              
+              const curlWithQuery = `curl -X ${endpointData.method || 'GET'} "${endpointUrl}?API_KEY=${apiKeyPlaceholder}"`;
+
+              const pythonWithHeader = `import requests
+
+api_key = "${apiKeyPlaceholder}"
+url = "${endpointUrl}"
+headers = {"X-API-Key": api_key}
+
+response = requests.${endpointData.method === 'POST' ? 'post' : 'get'}(url, headers=headers)
+print(response.json())`;
+
+              const pythonWithQuery = `import requests
+
+api_key = "${apiKeyPlaceholder}"
+url = "${endpointUrl}" + "?API_KEY=" + api_key
+
+response = requests.${endpointData.method === 'POST' ? 'post' : 'get'}(url)
+print(response.json())`;
+
+              return (
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-medium text-snowflake-700">cURL (X-API-Key Header)</h4>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(curlWithHeader);
+                          toast.success('cURL command copied!');
+                        }}
+                        className="px-2 py-1 text-xs font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded hover:bg-snowflake-50 flex items-center"
+                      >
+                        <Copy className="h-3 w-3 mr-1" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="bg-snowflake-50 rounded-md p-3 border border-snowflake-200">
+                      <pre className="text-xs text-snowflake-900 font-mono whitespace-pre-wrap break-all overflow-x-auto">
+                        {curlWithHeader}
+                      </pre>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-medium text-snowflake-700">cURL (Query Parameter)</h4>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(curlWithQuery);
+                          toast.success('cURL command copied!');
+                        }}
+                        className="px-2 py-1 text-xs font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded hover:bg-snowflake-50 flex items-center"
+                      >
+                        <Copy className="h-3 w-3 mr-1" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="bg-snowflake-50 rounded-md p-3 border border-snowflake-200">
+                      <pre className="text-xs text-snowflake-900 font-mono whitespace-pre-wrap break-all overflow-x-auto">
+                        {curlWithQuery}
+                      </pre>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-medium text-snowflake-700">Python (X-API-Key Header)</h4>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(pythonWithHeader);
+                          toast.success('Python code copied!');
+                        }}
+                        className="px-2 py-1 text-xs font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded hover:bg-snowflake-50 flex items-center"
+                      >
+                        <Copy className="h-3 w-3 mr-1" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="bg-snowflake-50 rounded-md p-3 border border-snowflake-200">
+                      <pre className="text-xs text-snowflake-900 font-mono whitespace-pre-wrap break-all overflow-x-auto">
+                        {pythonWithHeader}
+                      </pre>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-medium text-snowflake-700">Python (Query Parameter)</h4>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(pythonWithQuery);
+                          toast.success('Python code copied!');
+                        }}
+                        className="px-2 py-1 text-xs font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded hover:bg-snowflake-50 flex items-center"
+                      >
+                        <Copy className="h-3 w-3 mr-1" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="bg-snowflake-50 rounded-md p-3 border border-snowflake-200">
+                      <pre className="text-xs text-snowflake-900 font-mono whitespace-pre-wrap break-all overflow-x-auto">
+                        {pythonWithQuery}
+                      </pre>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         <div className="bg-white rounded-lg border border-snowflake-200 p-6">
           <h3 className="text-lg font-medium text-snowflake-900 mb-4">Target</h3>
@@ -256,6 +413,18 @@ const EndpointDetail = () => {
         isOpen={testModalOpen}
         onClose={() => setTestModalOpen(false)}
         endpoint={endpointData}
+      />
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={deleteConfirmModal}
+        onClose={() => setDeleteConfirmModal(false)}
+        onConfirm={handleDeleteConfirm}
+        title="Delete Endpoint"
+        message={endpointData ? `Are you sure you want to delete the endpoint "${endpointData.name}"?\n\nThis action cannot be undone and will also revoke any associated API keys.` : ''}
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
       />
     </div>
   );

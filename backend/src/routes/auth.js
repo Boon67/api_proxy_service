@@ -104,11 +104,25 @@ router.post('/login', async (req, res) => {
     logger.error(`[${requestId}] Login error`, {
       error: error.message,
       stack: error.stack,
-      duration: `${duration}ms`
+      duration: `${duration}ms`,
+      errorName: error.name,
+      errorCode: error.code,
+      sqlState: error.sqlState,
+      sqlCode: error.sqlCode
+    });
+    // Log to console for debugging
+    console.error(`[${requestId}] Login error details:`, {
+      message: error.message,
+      name: error.name,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlCode: error.sqlCode,
+      stack: error.stack
     });
     res.status(500).json({
       success: false,
-      error: 'Internal server error'
+      error: 'Internal server error',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });

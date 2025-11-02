@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { Plus, Edit, Trash2, Save, X, Tag } from 'lucide-react';
 import { apiService } from '../services/api';
+import ConfirmationModal from '../components/ConfirmationModal';
 import toast from 'react-hot-toast';
 
 const Tags = () => {
@@ -72,9 +73,16 @@ const Tags = () => {
     updateMutation.mutate({ id: editingId, data: editTag });
   };
 
-  const handleDelete = (tag) => {
-    if (window.confirm(`Are you sure you want to delete the tag "${tag.name}"? This will remove it from all endpoints and tokens.`)) {
-      deleteMutation.mutate(tag.id);
+  const [deleteConfirmModal, setDeleteConfirmModal] = React.useState({ isOpen: false, tag: null });
+
+  const handleDeleteClick = (tag) => {
+    setDeleteConfirmModal({ isOpen: true, tag });
+  };
+
+  const handleDeleteConfirm = () => {
+    if (deleteConfirmModal.tag) {
+      deleteMutation.mutate(deleteConfirmModal.tag.id);
+      setDeleteConfirmModal({ isOpen: false, tag: null });
     }
   };
 
@@ -199,23 +207,32 @@ const Tags = () => {
         </div>
       )}
 
-      {/* Tags List */}
-      <div className="bg-white rounded-lg border border-snowflake-200">
-        <div className="p-4 border-b border-snowflake-200">
-          <h2 className="text-lg font-semibold text-snowflake-900">All Tags ({tags.length})</h2>
-        </div>
-
+      {/* Tags Table */}
+      <div className="bg-white shadow overflow-hidden sm:rounded-md">
         {tags.length === 0 ? (
-          <div className="p-8 text-center text-snowflake-500">
+          <div className="p-12 text-center text-snowflake-500">
             <Tag className="h-12 w-12 mx-auto mb-3 text-snowflake-300" />
             <p>No tags created yet. Create your first tag to get started.</p>
           </div>
         ) : (
-          <div className="divide-y divide-snowflake-200">
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Color</th>
+                  <th>Description</th>
+                  <th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
             {tags.map((tag) => (
-              <div key={tag.id} className="p-4 hover:bg-snowflake-50">
+                  <tr key={tag.id}>
                 {editingId === tag.id ? (
-                  <div className="space-y-3">
+                      <>
+                        <td colSpan="4" className="p-4">
+                          <div className="space-y-4 bg-snowflake-50 p-4 rounded-lg border border-snowflake-200">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-snowflake-700 mb-1">
                         Tag Name *
@@ -264,6 +281,7 @@ const Tags = () => {
                         className="textarea"
                         rows={2}
                       />
+                              </div>
                     </div>
 
                     <div className="flex justify-end space-x-2">
@@ -287,57 +305,79 @@ const Tags = () => {
                       </button>
                     </div>
                   </div>
+                        </td>
+                      </>
                 ) : (
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
+                      <>
+                        <td>
+                          <div className="flex items-center">
+                            <Tag className="h-4 w-4 text-snowflake-400 mr-2" />
+                            <span className="font-medium text-snowflake-900">{tag.name}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="flex items-center space-x-2">
                       <div
-                        className="w-4 h-4 rounded"
+                              className="w-6 h-6 rounded border border-snowflake-300"
                         style={{ backgroundColor: tag.color || '#3B82F6' }}
+                              title={tag.color || '#3B82F6'}
                       />
-                      <div>
-                        <div className="flex items-center space-x-2">
-                          <span className="font-medium text-snowflake-900">{tag.name}</span>
                           <span
-                            className="px-2 py-0.5 rounded text-xs font-medium"
+                              className="px-2 py-0.5 rounded text-xs font-medium text-white"
                             style={{
                               backgroundColor: tag.color || '#3B82F6',
-                              color: 'white',
                               opacity: 0.9
                             }}
                           >
-                            {tag.name}
+                              {tag.color || '#3B82F6'}
                           </span>
                         </div>
-                        {tag.description && (
-                          <p className="text-sm text-snowflake-500 mt-1">{tag.description}</p>
-                        )}
+                        </td>
+                        <td className="text-sm text-snowflake-600 max-w-md">
+                          <div className="truncate" title={tag.description || 'No description'}>
+                            {tag.description || 'No description'}
                       </div>
-                    </div>
-
-                    <div className="flex items-center space-x-2">
+                        </td>
+                        <td>
+                          <div className="flex items-center justify-end space-x-1">
                       <button
                         onClick={() => handleEdit(tag)}
-                        className="p-2 rounded bg-snowflake-100 text-snowflake-600 hover:bg-snowflake-200"
+                              className="p-2 rounded bg-snowflake-100 text-snowflake-600 hover:bg-snowflake-200 transition-colors"
                         title="Edit tag"
                       >
                         <Edit className="h-4 w-4" />
                       </button>
                       <button
-                        onClick={() => handleDelete(tag)}
+                        onClick={() => handleDeleteClick(tag)}
                         disabled={deleteMutation.isLoading}
-                        className="p-2 rounded bg-red-100 text-red-600 hover:bg-red-200 disabled:opacity-50"
+                              className="p-2 rounded bg-red-100 text-red-600 hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         title="Delete tag"
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
                     </div>
-                  </div>
+                        </td>
+                      </>
                 )}
-              </div>
+                  </tr>
             ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={deleteConfirmModal.isOpen}
+        onClose={() => setDeleteConfirmModal({ isOpen: false, tag: null })}
+        onConfirm={handleDeleteConfirm}
+        title="Delete Tag"
+        message={deleteConfirmModal.tag ? `Are you sure you want to delete the tag "${deleteConfirmModal.tag.name}"? This will remove it from all endpoints and tokens.` : ''}
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
+      />
     </div>
   );
 };

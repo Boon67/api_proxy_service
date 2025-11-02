@@ -50,7 +50,7 @@ The deployment script (`scripts/deploy.sh`) uses SQL scripts as the **single sou
 **Creates**:
 - `USERS` table
 - `ENDPOINTS` table
-- `PAT_TOKENS` table
+- `API_KEYS` table (formerly PAT_TOKENS)
 - Views and default data
 
 **Prerequisites**: 

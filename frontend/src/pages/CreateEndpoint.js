@@ -6,6 +6,7 @@ import { Plus, ArrowLeft, Copy, Check, X, Play, Loader } from 'lucide-react';
 import { apiService } from '../services/api';
 import toast from 'react-hot-toast';
 import TagSelector from '../components/TagSelector';
+import APIKeyModal from '../components/APIKeyModal';
 
 const CreateEndpoint = () => {
   const navigate = useNavigate();
@@ -15,9 +16,11 @@ const CreateEndpoint = () => {
 
   const [createdEndpoint, setCreatedEndpoint] = React.useState(null);
   const [showUrlModal, setShowUrlModal] = React.useState(false);
+  const [apiKeyModal, setApiKeyModal] = React.useState({ isOpen: false, apiKey: null, endpointName: null });
   const [isTesting, setIsTesting] = React.useState(false);
   const [testResult, setTestResult] = React.useState(null);
   const [selectedTags, setSelectedTags] = React.useState([]);
+  const [generateApiKey, setGenerateApiKey] = React.useState(false);
 
   const { data: tagsResponse } = useQuery('tags', apiService.getTags);
   const tags = tagsResponse?.data || [];
@@ -48,7 +51,13 @@ const CreateEndpoint = () => {
 
   const onSubmit = async (data) => {
     try {
-      const response = await apiService.createEndpoint(data);
+      // Include generateApiKey flag in the request
+      const requestData = {
+        ...data,
+        generateApiKey: generateApiKey
+      };
+      
+      const response = await apiService.createEndpoint(requestData);
       if (response.success) {
         const endpointId = response.data.id;
         
@@ -63,7 +72,19 @@ const CreateEndpoint = () => {
         }
         
         setCreatedEndpoint(response.data);
-        setShowUrlModal(true);
+        
+        // Show API key modal if token was generated
+        if (response.data.token) {
+          setApiKeyModal({
+            isOpen: true,
+            apiKey: response.data.token,
+            endpointName: response.data.name
+          });
+        } else {
+          // Otherwise show the URL modal
+          setShowUrlModal(true);
+        }
+        
         toast.success('Endpoint created successfully!');
       } else {
         toast.error(response.error || 'Failed to create endpoint');
@@ -139,6 +160,28 @@ const CreateEndpoint = () => {
               rows={2}
               placeholder="Enter endpoint description"
             />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
+              Custom Path (Optional)
+            </label>
+            <input
+              {...register('path', {
+                pattern: {
+                  value: /^[a-zA-Z0-9_-]+$/,
+                  message: 'Path must contain only alphanumeric characters, hyphens, and underscores'
+                }
+              })}
+              className="input text-sm py-1.5"
+              placeholder="e.g., TB1 (leave empty to use UUID)"
+            />
+            <p className="mt-0.5 text-xs text-snowflake-500">
+              Custom URL path for this endpoint. If set, use this instead of the UUID in the URL.
+            </p>
+            {errors.path && (
+              <p className="mt-0.5 text-xs text-red-600">{errors.path.message}</p>
+            )}
           </div>
 
           <div>
@@ -268,6 +311,27 @@ const CreateEndpoint = () => {
             </div>
           </div>
 
+          {/* Generate API Key Option */}
+          <div className="flex items-start">
+            <div className="flex items-center h-5">
+              <input
+                id="generateApiKey"
+                type="checkbox"
+                checked={generateApiKey}
+                onChange={(e) => setGenerateApiKey(e.target.checked)}
+                className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-snowflake-300 rounded"
+              />
+            </div>
+            <div className="ml-3 text-sm">
+              <label htmlFor="generateApiKey" className="font-medium text-snowflake-700">
+                Generate API Key
+              </label>
+              <p className="text-xs text-snowflake-500">
+                Create an API key for this endpoint. The key will be shown only once after creation.
+              </p>
+            </div>
+          </div>
+
           <div className="flex justify-end space-x-2 pt-2">
             <button
               type="button"
@@ -361,6 +425,22 @@ const CreateEndpoint = () => {
           </div>
         </div>
       )}
+
+      {/* API Key Modal */}
+      <APIKeyModal
+        isOpen={apiKeyModal.isOpen}
+        onClose={() => {
+          setApiKeyModal({ isOpen: false, apiKey: null, endpointName: null });
+          // After closing API key modal, show URL modal or navigate
+          if (createdEndpoint) {
+            setShowUrlModal(true);
+          } else {
+            navigate('/endpoints');
+          }
+        }}
+        apiKey={apiKeyModal.apiKey}
+        endpointName={apiKeyModal.endpointName}
+      />
     </div>
   );
 };

@@ -59,7 +59,13 @@ class TokenService {
     }
 
     // Update usage statistics
+    try {
     await databaseService.updatePATTokenUsage(tokenData.id);
+      logger.debug(`PAT token usage updated: tokenId=${tokenData.id}`);
+    } catch (error) {
+      logger.error('Error updating PAT token usage in validatePATToken:', error);
+      // Don't fail token validation if usage update fails
+    }
 
     return {
       ...tokenData,

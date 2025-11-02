@@ -200,7 +200,7 @@ describe('API Service', () => {
 
       const result = await apiService.generateToken('1');
 
-      expect(mockedAxios.post).toHaveBeenCalledWith('/api/endpoints/1/token');
+      expect(mockedAxios.post).toHaveBeenCalledWith('/api/endpoints/1/api_key');
       expect(result).toEqual(mockResponse.data);
     });
   });
@@ -222,7 +222,7 @@ describe('API Service', () => {
 
       const result = await apiService.getToken('1');
 
-      expect(mockedAxios.get).toHaveBeenCalledWith('/api/endpoints/1/token');
+      expect(mockedAxios.get).toHaveBeenCalledWith('/api/endpoints/1/api_key');
       expect(result).toEqual(mockResponse.data);
     });
   });

@@ -167,12 +167,12 @@ confirm_cleanup() {
     echo -e "${YELLOW}⚠️  WARNING: This will permanently delete the following resources:${NC}"
     echo -e "${RED}   Service: ${SERVICE_NAME}${NC}"
     echo -e "${RED}   Compute Pool: ${COMPUTE_POOL}${NC}"
-    echo -e "${RED}   Database: ${DATABASE}${NC}"
+    echo -e "${RED}   Database: ${DATABASE} (and ALL schemas, tables, views, procedures, etc.)${NC}"
     echo -e "${RED}   Schema: ${DATABASE}.${SCHEMA}${NC}"
     echo -e "${RED}   Warehouse: ${WAREHOUSE}${NC}"
-    echo -e "${RED}   User: ${SERVICE_USER_NAME}${NC}"
-    echo -e "${RED}   Role: ${SERVICE_ROLE_NAME}${NC}"
-    echo -e "${RED}   All tables and views in ${DATABASE}.${SCHEMA}${NC}"
+    echo -e "${RED}   Service User: ${SERVICE_USER_NAME}${NC}"
+    echo -e "${RED}   Service Role: ${SERVICE_ROLE_NAME}${NC}"
+    echo -e "${RED}   All tables, views, stored procedures, and other objects${NC}"
     echo ""
     read -p "Are you sure you want to continue? (yes/no): " response
     
@@ -246,23 +246,48 @@ drop_compute_pool() {
 drop_database() {
     echo -e "${BLUE}Checking for database: ${DATABASE}...${NC}"
     
-    # Determine role for dropping database
+    # Determine role for dropping database (needs SYSADMIN or ACCOUNTADMIN)
     OBJECT_ROLE=$(get_role_for_operation "OBJECT")
     
     # Check if database exists
     DB_EXISTS=false
-    if snow sql -q "SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null | grep -qi "${DATABASE}"; then
+    DB_CHECK=$(snow sql -q "USE ROLE ${OBJECT_ROLE}; SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null || echo "")
+    if echo "$DB_CHECK" | grep -qi "${DATABASE}"; then
         DB_EXISTS=true
     fi
     
     if [ "$DB_EXISTS" = true ]; then
-        echo -e "${YELLOW}Dropping database: ${DATABASE} (this will drop all schemas, tables, views, etc.)...${NC}"
+        echo -e "${YELLOW}Dropping database: ${DATABASE} (this will cascade to all schemas, tables, views, procedures, etc.)...${NC}"
         
-        # Drop database (will cascade to schema and all objects)
-        if snow sql -q "USE ROLE ${OBJECT_ROLE}; DROP DATABASE IF EXISTS ${DATABASE} CASCADE" 2>&1; then
-            echo -e "${GREEN}✅ Database ${DATABASE} dropped${NC}"
+        # Drop database with CASCADE to remove all contained objects
+        DROP_OUTPUT=$(snow sql -q "USE ROLE ${OBJECT_ROLE}; DROP DATABASE IF EXISTS ${DATABASE}" 2>&1)
+        DROP_EXIT=$?
+        
+        if [ $DROP_EXIT -eq 0 ]; then
+            echo -e "${GREEN}✅ Database ${DATABASE} dropped successfully${NC}"
         else
-            echo -e "${YELLOW}⚠️  Failed to drop database (may not exist or have dependencies)${NC}"
+            # Check if it's because database doesn't exist
+            if echo "$DROP_OUTPUT" | grep -qiE "does not exist|not found"; then
+                echo -e "${BLUE}Database ${DATABASE} does not exist${NC}"
+            else
+                echo -e "${YELLOW}⚠️  Warning during database drop:${NC}"
+                echo "$DROP_OUTPUT" | head -5
+                echo -e "${BLUE}Trying again with ACCOUNTADMIN role...${NC}"
+                # Try with ACCOUNTADMIN as fallback
+                if snow sql -q "USE ROLE ACCOUNTADMIN; DROP DATABASE IF EXISTS ${DATABASE} CASCADE" 2>&1 | grep -qiE "successfully|dropped|does not exist"; then
+                    echo -e "${GREEN}✅ Database ${DATABASE} dropped with ACCOUNTADMIN${NC}"
+                else
+                    echo -e "${RED}❌ Failed to drop database. Manual cleanup may be required.${NC}"
+                fi
+            fi
+        fi
+        
+        # Verify database is gone
+        sleep 1
+        VERIFY_CHECK=$(snow sql -q "USE ROLE ${OBJECT_ROLE}; SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null || echo "")
+        if echo "$VERIFY_CHECK" | grep -qi "${DATABASE}"; then
+            echo -e "${YELLOW}⚠️  Database ${DATABASE} still exists. Retrying drop...${NC}"
+            snow sql -q "USE ROLE ACCOUNTADMIN; DROP DATABASE IF EXISTS ${DATABASE} CASCADE" 2>&1 || true
         fi
     else
         echo -e "${BLUE}Database ${DATABASE} does not exist${NC}"
@@ -298,21 +323,52 @@ drop_warehouse() {
 drop_user() {
     echo -e "${BLUE}Checking for user: ${SERVICE_USER_NAME}...${NC}"
     
-    # Determine role for dropping user
+    # Determine role for dropping user (needs USERADMIN or ACCOUNTADMIN)
     USER_ROLE=$(get_role_for_operation "USER_ROLE")
     
     # Check if user exists
     USER_EXISTS=false
-    if snow sql -q "USE ROLE ${USER_ROLE}; SHOW USERS LIKE '${SERVICE_USER_NAME}'" 2>/dev/null | grep -qi "${SERVICE_USER_NAME}"; then
+    USER_CHECK=$(snow sql -q "USE ROLE ${USER_ROLE}; SHOW USERS LIKE '${SERVICE_USER_NAME}'" 2>/dev/null || echo "")
+    if echo "$USER_CHECK" | grep -qi "${SERVICE_USER_NAME}"; then
         USER_EXISTS=true
     fi
     
     if [ "$USER_EXISTS" = true ]; then
         echo -e "${YELLOW}Dropping user: ${SERVICE_USER_NAME}...${NC}"
-        if snow sql -q "USE ROLE ${USER_ROLE}; DROP USER IF EXISTS ${SERVICE_USER_NAME}" 2>&1; then
-            echo -e "${GREEN}✅ User ${SERVICE_USER_NAME} dropped${NC}"
+        
+        # First, revoke all roles from the user to avoid dependency issues
+        echo -e "${BLUE}   Revoking roles from user...${NC}"
+        snow sql -q "USE ROLE ${USER_ROLE}; REVOKE ROLE ${SERVICE_ROLE_NAME} FROM USER ${SERVICE_USER_NAME}" 2>/dev/null || true
+        
+        # Drop user
+        DROP_OUTPUT=$(snow sql -q "USE ROLE ${USER_ROLE}; DROP USER IF EXISTS ${SERVICE_USER_NAME}" 2>&1)
+        DROP_EXIT=$?
+        
+        if [ $DROP_EXIT -eq 0 ]; then
+            echo -e "${GREEN}✅ User ${SERVICE_USER_NAME} dropped successfully${NC}"
         else
-            echo -e "${YELLOW}⚠️  Failed to drop user (may not exist or have dependencies)${NC}"
+            # Check if it's because user doesn't exist
+            if echo "$DROP_OUTPUT" | grep -qiE "does not exist|not found"; then
+                echo -e "${BLUE}User ${SERVICE_USER_NAME} does not exist${NC}"
+            else
+                echo -e "${YELLOW}⚠️  Warning during user drop:${NC}"
+                echo "$DROP_OUTPUT" | head -5
+                echo -e "${BLUE}Trying again with ACCOUNTADMIN role...${NC}"
+                # Try with ACCOUNTADMIN as fallback
+                if snow sql -q "USE ROLE ACCOUNTADMIN; DROP USER IF EXISTS ${SERVICE_USER_NAME}" 2>&1 | grep -qiE "successfully|dropped|does not exist"; then
+                    echo -e "${GREEN}✅ User ${SERVICE_USER_NAME} dropped with ACCOUNTADMIN${NC}"
+                else
+                    echo -e "${RED}❌ Failed to drop user. Manual cleanup may be required.${NC}"
+                fi
+            fi
+        fi
+        
+        # Verify user is gone
+        sleep 1
+        VERIFY_CHECK=$(snow sql -q "USE ROLE ${USER_ROLE}; SHOW USERS LIKE '${SERVICE_USER_NAME}'" 2>/dev/null || echo "")
+        if echo "$VERIFY_CHECK" | grep -qi "${SERVICE_USER_NAME}"; then
+            echo -e "${YELLOW}⚠️  User ${SERVICE_USER_NAME} still exists. Retrying drop...${NC}"
+            snow sql -q "USE ROLE ACCOUNTADMIN; DROP USER IF EXISTS ${SERVICE_USER_NAME}" 2>&1 || true
         fi
     else
         echo -e "${BLUE}User ${SERVICE_USER_NAME} does not exist${NC}"
@@ -323,25 +379,73 @@ drop_user() {
 drop_role() {
     echo -e "${BLUE}Checking for role: ${SERVICE_ROLE_NAME}...${NC}"
     
-    # Determine role for dropping role
+    # Determine role for dropping role (needs USERADMIN or ACCOUNTADMIN)
     USER_ROLE=$(get_role_for_operation "USER_ROLE")
     
     # Check if role exists
     ROLE_EXISTS=false
-    if snow sql -q "SHOW ROLES LIKE '${SERVICE_ROLE_NAME}'" 2>/dev/null | grep -qi "${SERVICE_ROLE_NAME}"; then
+    ROLE_CHECK=$(snow sql -q "USE ROLE ${USER_ROLE}; SHOW ROLES LIKE '${SERVICE_ROLE_NAME}'" 2>/dev/null || echo "")
+    if echo "$ROLE_CHECK" | grep -qi "${SERVICE_ROLE_NAME}"; then
         ROLE_EXISTS=true
     fi
     
     if [ "$ROLE_EXISTS" = true ]; then
         echo -e "${YELLOW}Dropping role: ${SERVICE_ROLE_NAME}...${NC}"
-        # First revoke the role from any users (if any)
+        
+        # First, revoke the role from any users
+        echo -e "${BLUE}   Revoking role from users...${NC}"
         snow sql -q "USE ROLE ${USER_ROLE}; REVOKE ROLE ${SERVICE_ROLE_NAME} FROM USER ${SERVICE_USER_NAME}" 2>/dev/null || true
         
-        # Then drop the role
-        if snow sql -q "USE ROLE ${USER_ROLE}; DROP ROLE IF EXISTS ${SERVICE_ROLE_NAME}" 2>&1; then
-            echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} dropped${NC}"
+        # Revoke all privileges granted to this role
+        # Note: We need to revoke grants on objects before we can drop the role
+        echo -e "${BLUE}   Revoking grants from role...${NC}"
+        
+        # Revoke usage on warehouse
+        snow sql -q "USE ROLE ACCOUNTADMIN; REVOKE USAGE ON WAREHOUSE ${WAREHOUSE} FROM ROLE ${SERVICE_ROLE_NAME}" 2>/dev/null || true
+        
+        # Revoke usage on database
+        snow sql -q "USE ROLE ACCOUNTADMIN; REVOKE USAGE ON DATABASE ${DATABASE} FROM ROLE ${SERVICE_ROLE_NAME}" 2>/dev/null || true
+        
+        # Revoke usage on schema (if database still exists)
+        snow sql -q "USE ROLE ACCOUNTADMIN; REVOKE USAGE ON SCHEMA ${DATABASE}.${SCHEMA} FROM ROLE ${SERVICE_ROLE_NAME}" 2>/dev/null || true
+        
+        # Revoke all privileges on all objects in schema (if database still exists)
+        snow sql -q "USE ROLE ACCOUNTADMIN; REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${DATABASE}.${SCHEMA} FROM ROLE ${SERVICE_ROLE_NAME}" 2>/dev/null || true
+        snow sql -q "USE ROLE ACCOUNTADMIN; REVOKE ALL PRIVILEGES ON ALL VIEWS IN SCHEMA ${DATABASE}.${SCHEMA} FROM ROLE ${SERVICE_ROLE_NAME}" 2>/dev/null || true
+        snow sql -q "USE ROLE ACCOUNTADMIN; REVOKE ALL PRIVILEGES ON ALL PROCEDURES IN SCHEMA ${DATABASE}.${SCHEMA} FROM ROLE ${SERVICE_ROLE_NAME}" 2>/dev/null || true
+        
+        # Drop the role
+        DROP_OUTPUT=$(snow sql -q "USE ROLE ${USER_ROLE}; DROP ROLE IF EXISTS ${SERVICE_ROLE_NAME}" 2>&1)
+        DROP_EXIT=$?
+        
+        if [ $DROP_EXIT -eq 0 ]; then
+            echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} dropped successfully${NC}"
         else
-            echo -e "${YELLOW}⚠️  Failed to drop role (may not exist or have dependencies)${NC}"
+            # Check if it's because role doesn't exist
+            if echo "$DROP_OUTPUT" | grep -qiE "does not exist|not found"; then
+                echo -e "${BLUE}Role ${SERVICE_ROLE_NAME} does not exist${NC}"
+            else
+                echo -e "${YELLOW}⚠️  Warning during role drop:${NC}"
+                echo "$DROP_OUTPUT" | head -5
+                echo -e "${BLUE}Trying again with ACCOUNTADMIN role...${NC}"
+                # Try with ACCOUNTADMIN as fallback
+                if snow sql -q "USE ROLE ACCOUNTADMIN; DROP ROLE IF EXISTS ${SERVICE_ROLE_NAME}" 2>&1 | grep -qiE "successfully|dropped|does not exist"; then
+                    echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} dropped with ACCOUNTADMIN${NC}"
+                else
+                    echo -e "${RED}❌ Failed to drop role. Manual cleanup may be required.${NC}"
+                    echo -e "${BLUE}   You may need to manually revoke all grants and drop the role:${NC}"
+                    echo -e "${BLUE}   USE ROLE ACCOUNTADMIN; DROP ROLE ${SERVICE_ROLE_NAME};${NC}"
+                fi
+            fi
+        fi
+        
+        # Verify role is gone
+        sleep 1
+        VERIFY_CHECK=$(snow sql -q "USE ROLE ${USER_ROLE}; SHOW ROLES LIKE '${SERVICE_ROLE_NAME}'" 2>/dev/null || echo "")
+        if echo "$VERIFY_CHECK" | grep -qi "${SERVICE_ROLE_NAME}"; then
+            echo -e "${YELLOW}⚠️  Role ${SERVICE_ROLE_NAME} still exists. Retrying drop...${NC}"
+            # Final attempt with ACCOUNTADMIN
+            snow sql -q "USE ROLE ACCOUNTADMIN; DROP ROLE IF EXISTS ${SERVICE_ROLE_NAME}" 2>&1 || true
         fi
     else
         echo -e "${BLUE}Role ${SERVICE_ROLE_NAME} does not exist${NC}"
@@ -389,7 +493,8 @@ main() {
     drop_compute_pool
     echo ""
     
-    # 3. Drop database (cascades to schema, tables, views, etc.)
+    # 3. Drop database (cascades to schema, tables, views, procedures, etc.)
+    # This is critical - dropping the database removes ALL data
     drop_database
     echo ""
     
@@ -397,12 +502,37 @@ main() {
     drop_warehouse
     echo ""
     
-    # 5. Drop user (must be done before role in some cases)
+    # 5. Drop service user (created by setup_service_account.sql)
+    # This must be done to fully clean up the deployment
     drop_user
     echo ""
     
-    # 6. Drop role
+    # 6. Drop service role (created by setup_service_account.sql)
     drop_role
+    echo ""
+    
+    # Final verification
+    echo -e "${BLUE}Verifying cleanup...${NC}"
+    DB_STILL_EXISTS=$(snow sql -q "USE ROLE SYSADMIN; SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null | grep -qi "${DATABASE}" && echo "yes" || echo "no")
+    USER_STILL_EXISTS=$(snow sql -q "USE ROLE USERADMIN; SHOW USERS LIKE '${SERVICE_USER_NAME}'" 2>/dev/null | grep -qi "${SERVICE_USER_NAME}" && echo "yes" || echo "no")
+    ROLE_STILL_EXISTS=$(snow sql -q "USE ROLE USERADMIN; SHOW ROLES LIKE '${SERVICE_ROLE_NAME}'" 2>/dev/null | grep -qi "${SERVICE_ROLE_NAME}" && echo "yes" || echo "no")
+    
+    if [ "$DB_STILL_EXISTS" = "yes" ]; then
+        echo -e "${YELLOW}⚠️  Database ${DATABASE} still exists. Manual cleanup may be required.${NC}"
+    fi
+    
+    if [ "$USER_STILL_EXISTS" = "yes" ]; then
+        echo -e "${YELLOW}⚠️  User ${SERVICE_USER_NAME} still exists. Manual cleanup may be required.${NC}"
+    fi
+    
+    if [ "$ROLE_STILL_EXISTS" = "yes" ]; then
+        echo -e "${YELLOW}⚠️  Role ${SERVICE_ROLE_NAME} still exists. Manual cleanup may be required.${NC}"
+        echo -e "${BLUE}   Try running: USE ROLE ACCOUNTADMIN; DROP ROLE ${SERVICE_ROLE_NAME};${NC}"
+    fi
+    
+    if [ "$DB_STILL_EXISTS" = "no" ] && [ "$USER_STILL_EXISTS" = "no" ] && [ "$ROLE_STILL_EXISTS" = "no" ]; then
+        echo -e "${GREEN}✅ Database, user, and role successfully removed${NC}"
+    fi
     echo ""
     
     echo -e "${GREEN}=====================================================${NC}"

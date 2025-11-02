@@ -144,7 +144,7 @@ The complete setup creates two audit tables with clustering keys for optimal per
 - Records error information
 - Clustered by (CREATED_AT, ENDPOINT_ID) for efficient time-based and endpoint queries
 
-**TOKEN_USAGE_LOG:**
+**API_USAGE_LOG (formerly TOKEN_USAGE_LOG):**
 - Tracks token usage patterns
 - Monitors endpoint access
 - Provides usage statistics
@@ -156,7 +156,7 @@ The complete setup creates two audit tables with clustering keys for optimal per
 
 **Clustering Keys:**
 - `API_AUDIT_LOG` is clustered by `(CREATED_AT, ENDPOINT_ID)` for efficient time-range and endpoint-specific queries
-- `TOKEN_USAGE_LOG` is clustered by `(TOKEN_ID, LAST_USED)` for efficient token-based lookups
+- `API_USAGE_LOG` is clustered by `(TOKEN_ID, LAST_USED)` for efficient token-based lookups
 
 **Query Optimization Tips:**
 - Use `WHERE` clauses on clustered columns for best performance

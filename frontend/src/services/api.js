@@ -98,17 +98,27 @@ export const apiService = {
 
   // Token management
   generateAPIKey: async (endpointId) => {
-    const response = await api.post(`/api/endpoints/${endpointId}/token`);
+    const response = await api.post(`/api/endpoints/${endpointId}/api_key`);
     return response.data;
   },
 
   getAPIKey: async (endpointId) => {
-    const response = await api.get(`/api/endpoints/${endpointId}/token`);
+    const response = await api.get(`/api/endpoints/${endpointId}/api_key`);
     return response.data;
   },
 
   getAPIKeys: async () => {
-    const response = await api.get('/api/tokens');
+    const response = await api.get('/api/api_keys');
+    return response.data;
+  },
+
+  revokeAPIKey: async (tokenId) => {
+    const response = await api.delete(`/api/api_keys/${tokenId}`);
+    return response.data;
+  },
+
+  deleteAPIKey: async (tokenId) => {
+    const response = await api.delete(`/api/api_keys/${tokenId}?permanent=true`);
     return response.data;
   },
 
@@ -138,8 +148,10 @@ export const apiService = {
   },
 
   // Endpoint usage statistics
-  getEndpointUsage: async () => {
-    const response = await api.get('/api/endpoints/usage');
+  getEndpointUsage: async (days = 7) => {
+    const response = await api.get('/api/endpoints/usage', {
+      params: { days }
+    });
     return response.data;
   },
 
@@ -224,12 +236,6 @@ export const apiService = {
     return response.data;
   },
 
-  // Enable/disable endpoint
-  updateEndpointStatus: async (endpointId, isActive) => {
-    const response = await api.patch(`/api/endpoints/${endpointId}/status`, { isActive });
-    return response.data;
-  },
-
   // Proxy endpoints (for testing)
   testProxyEndpoint: async (token, method = 'GET', data = null) => {
     const config = {
@@ -272,7 +278,15 @@ export const apiService = {
   },
 
   setTokenTags: async (tokenId, tagIds) => {
-    const response = await api.put(`/api/tokens/${tokenId}/tags`, { tagIds });
+    const response = await api.put(`/api/api_keys/${tokenId}/tags`, { tagIds });
+    return response.data;
+  },
+
+  changePassword: async (currentPassword, newPassword) => {
+    const response = await api.post('/auth/change-password', {
+      currentPassword,
+      newPassword
+    });
     return response.data;
   },
 };

@@ -36,6 +36,28 @@ router.get('/endpoints', async (req, res) => {
   }
 });
 
+// GET /api/endpoints/usage - Get endpoint usage statistics for charts
+// This must come BEFORE /endpoints/:id to avoid route conflict
+// Query parameter: days (1, 7, 30, 90) - default is 7
+router.get('/endpoints/usage', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7;
+    const usageStats = await databaseService.getEndpointUsageStats(days);
+    
+    res.json({
+      success: true,
+      data: usageStats,
+      count: usageStats.length
+    });
+  } catch (error) {
+    logger.error('Error fetching endpoint usage:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch endpoint usage statistics'
+    });
+  }
+});
+
 // GET /api/endpoints/:id - Get specific endpoint
 router.get('/endpoints/:id', async (req, res) => {
   try {
@@ -48,7 +70,7 @@ router.get('/endpoints/:id', async (req, res) => {
     }
 
     // Add endpoint URL to the response
-    endpoint.url = getEndpointUrl(endpoint.id);
+    endpoint.url = getEndpointUrl(endpoint.id, endpoint.path);
 
     res.json({
       success: true,
@@ -95,30 +117,43 @@ router.post('/endpoints', validateEndpoint, async (req, res) => {
     const createdEndpoint = await databaseService.createEndpoint(endpointData);
     logger.info(`Endpoint created: ${createdEndpoint.name} (${createdEndpoint.id}) by ${req.user?.username || 'admin'}`);
 
-    // Automatically generate an API key for the new endpoint
-    try {
-      const tokenData = await tokenService.createPATToken(createdEndpoint.id, {
-        endpointName: createdEndpoint.name,
-        createdBy: req.user?.username || 'admin'
-      });
-      logger.info(`API key auto-generated for endpoint ${createdEndpoint.id}`);
-      
-      // Refresh endpoint to include hasToken flag
-      const refreshedEndpoint = await databaseService.getEndpointById(createdEndpoint.id);
-      createdEndpoint.hasToken = refreshedEndpoint.hasToken;
-      createdEndpoint.tokenId = tokenData.id;
-    } catch (tokenError) {
-      logger.error(`Failed to auto-generate API key for endpoint ${createdEndpoint.id}:`, tokenError);
-      // Don't fail endpoint creation if token generation fails, but mark it
-      createdEndpoint.hasToken = false;
+    // Optionally generate an API key for the new endpoint if requested
+    let generatedToken = null;
+    const generateApiKey = req.body.generateApiKey === true || req.body.generateApiKey === 'true';
+    
+    if (generateApiKey) {
+      try {
+        const tokenData = await tokenService.createPATToken(createdEndpoint.id, {
+          endpointName: createdEndpoint.name,
+          createdBy: req.user?.username || 'admin'
+        });
+        logger.info(`API key generated for endpoint ${createdEndpoint.id}`);
+        generatedToken = tokenData.token; // Store the actual token to return in response
+        createdEndpoint.tokenId = tokenData.id;
+      } catch (tokenError) {
+        logger.error(`Failed to generate API key for endpoint ${createdEndpoint.id}:`, tokenError);
+        // Don't fail endpoint creation if token generation fails
+      }
     }
+    
+    // Refresh endpoint to include hasToken flag and path
+    const refreshedEndpoint = await databaseService.getEndpointById(createdEndpoint.id);
+    createdEndpoint.hasToken = refreshedEndpoint.hasToken;
+    createdEndpoint.path = refreshedEndpoint.path;
+    createdEndpoint.url = getEndpointUrl(createdEndpoint.id, refreshedEndpoint.path);
 
-    // Add endpoint URL to the response
-    createdEndpoint.url = getEndpointUrl(createdEndpoint.id);
+    const responseData = {
+      ...createdEndpoint
+    };
+    
+    // Include the token in response if it was generated (only shown once)
+    if (generatedToken) {
+      responseData.token = generatedToken;
+    }
 
     res.status(201).json({
       success: true,
-      data: createdEndpoint
+      data: responseData
     });
   } catch (error) {
     logger.error('Error creating endpoint:', error);
@@ -169,7 +204,7 @@ router.put('/endpoints/:id', validateEndpoint, async (req, res) => {
     logger.info(`Endpoint updated: ${updatedEndpoint.name} (${updatedEndpoint.id})`);
 
     // Add endpoint URL to the response
-    updatedEndpoint.url = getEndpointUrl(updatedEndpoint.id);
+    updatedEndpoint.url = getEndpointUrl(updatedEndpoint.id, updatedEndpoint.path);
 
     res.json({
       success: true,
@@ -201,8 +236,8 @@ router.delete('/endpoints/:id', async (req, res) => {
       await tokenService.revokePATToken(tokenData.token);
     }
 
-    await databaseService.deleteEndpoint(req.params.id);
-    logger.info(`Endpoint deleted: ${endpoint.name} (${endpoint.id})`);
+    await databaseService.deleteEndpoint(req.params.id, req.user?.username || 'system');
+    logger.info(`Endpoint deleted: ${endpoint.name} (${endpoint.id}) by ${req.user?.username || 'system'}`);
 
     res.json({
       success: true,
@@ -217,8 +252,8 @@ router.delete('/endpoints/:id', async (req, res) => {
   }
 });
 
-// POST /api/endpoints/:id/token - Generate API key for endpoint
-router.post('/endpoints/:id/token', async (req, res) => {
+// POST /api/endpoints/:id/api_key - Generate API key for endpoint
+router.post('/endpoints/:id/api_key', async (req, res) => {
   try {
     const endpoint = await databaseService.getEndpointById(req.params.id);
     if (!endpoint) {
@@ -258,8 +293,8 @@ router.post('/endpoints/:id/token', async (req, res) => {
   }
 });
 
-// GET /api/endpoints/:id/token - Get token info for endpoint
-router.get('/endpoints/:id/token', async (req, res) => {
+// GET /api/endpoints/:id/api_key - Get API key info for endpoint
+router.get('/endpoints/:id/api_key', async (req, res) => {
   try {
     const tokenData = await tokenService.getTokenByEndpointId(req.params.id);
     if (!tokenData) {
@@ -289,8 +324,8 @@ router.get('/endpoints/:id/token', async (req, res) => {
   }
 });
 
-// GET /api/tokens - List all tokens
-router.get('/tokens', async (req, res) => {
+// GET /api/api_keys - List all API keys (formerly /api/tokens)
+router.get('/api_keys', async (req, res) => {
   try {
     const tokens = await tokenService.getAllTokens();
     res.json({
@@ -299,10 +334,60 @@ router.get('/tokens', async (req, res) => {
       count: tokens.length
     });
   } catch (error) {
-    logger.error('Error fetching tokens:', error);
+    logger.error('Error fetching API keys:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch tokens'
+      error: 'Failed to fetch API keys'
+    });
+  }
+});
+
+// DELETE /api/api_keys/:id - Revoke an API key (if permanent=true, delete permanently)
+router.delete('/api_keys/:id', async (req, res) => {
+  try {
+    const tokenId = req.params.id;
+    const permanent = req.query.permanent === 'true' || req.query.permanent === true;
+    
+    // Get API key data by ID
+    const tokenData = await databaseService.getPATTokenById(tokenId);
+    if (!tokenData) {
+      return res.status(404).json({
+        success: false,
+        error: 'API key not found'
+      });
+    }
+
+    if (permanent) {
+      // Permanently delete the token
+      if (tokenData.isActive) {
+        return res.status(400).json({
+          success: false,
+          error: 'Cannot delete active API key. Please revoke it first.'
+        });
+      }
+
+      await databaseService.deletePATToken(tokenId, req.user?.username || 'system');
+      logger.info(`API key permanently deleted: ${tokenId} by ${req.user?.username || 'system'}`);
+
+      res.json({
+        success: true,
+        message: 'API key permanently deleted'
+      });
+    } else {
+      // Revoke the API key (soft delete)
+      await databaseService.revokePATToken(tokenData.token);
+      logger.info(`API key revoked: ${tokenId}`);
+
+      res.json({
+        success: true,
+        message: 'API key revoked successfully'
+      });
+    }
+  } catch (error) {
+    logger.error('Error processing API key:', error);
+    res.status(500).json({
+      success: false,
+      error: permanent ? 'Failed to delete API key' : 'Failed to revoke API key'
     });
   }
 });
@@ -583,25 +668,6 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// GET /api/endpoints/usage - Get endpoint usage statistics for charts
-router.get('/endpoints/usage', async (req, res) => {
-  try {
-    const usageStats = await databaseService.getEndpointUsageStats();
-    
-    res.json({
-      success: true,
-      data: usageStats,
-      count: usageStats.length
-    });
-  } catch (error) {
-    logger.error('Error fetching endpoint usage:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch endpoint usage statistics'
-    });
-  }
-});
-
 // GET /api/settings - Get system settings
 router.get('/settings', async (req, res) => {
   try {
@@ -801,28 +867,31 @@ router.put('/endpoints/:id/tags', async (req, res) => {
   }
 });
 
-// PUT /api/tokens/:id/tags - Set tags for a token
-router.put('/tokens/:id/tags', async (req, res) => {
+// PUT /api/api_keys/:id/tags - Set tags for an API key (deprecated - TOKEN_TAGS table no longer used)
+// This route is kept for backward compatibility but token tags are no longer supported
+router.put('/api_keys/:id/tags', async (req, res) => {
   try {
     const { tagIds } = req.body;
     const token = await databaseService.getPATTokenById(req.params.id);
     if (!token) {
       return res.status(404).json({
         success: false,
-        error: 'Token not found'
+        error: 'API key not found'
       });
     }
 
-    const tags = await databaseService.setTokenTags(req.params.id, tagIds || []);
+    // TOKEN_TAGS table is no longer used, so this operation is a no-op
+    // Return empty array to maintain API compatibility
     res.json({
       success: true,
-      data: tags
+      data: [],
+      message: 'Token tags are no longer supported. This operation has no effect.'
     });
   } catch (error) {
-    logger.error('Error setting token tags:', error);
+    logger.error('Error setting API key tags:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to set token tags'
+      error: 'API key tags are no longer supported'
     });
   }
 });

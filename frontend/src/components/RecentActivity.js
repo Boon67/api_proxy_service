@@ -26,12 +26,19 @@ const RecentActivity = () => {
               return `Endpoint "${entityName}" set to draft`;
             case 'endpoint_suspended':
               return `Endpoint "${entityName}" suspended`;
+      case 'endpoint_updated':
+        return `Endpoint "${entityName}" updated`;
       case 'token_generated':
         return `API Key generated for "${entityName}" endpoint`;
       case 'token_used':
         return `API Key used for "${entityName}" endpoint`;
       case 'token_revoked':
         return `API Key revoked for "${entityName}" endpoint`;
+      case 'token_deleted':
+      case 'api_key_deleted':
+        return `API Key deleted for "${entityName}" endpoint`;
+      case 'endpoint_deleted':
+        return `Endpoint "${entityName}" deleted`;
       default:
         return `Activity on "${entityName}"`;
     }
@@ -40,6 +47,7 @@ const RecentActivity = () => {
   const getActivityIcon = (type) => {
     switch (type) {
       case 'endpoint_created':
+      case 'endpoint_updated':
         return Server;
             case 'endpoint_enabled':
               return CheckCircle;
@@ -51,7 +59,11 @@ const RecentActivity = () => {
       case 'token_generated':
       case 'token_used':
       case 'token_revoked':
+      case 'token_deleted':
+      case 'api_key_deleted':
         return Key;
+      case 'endpoint_deleted':
+        return Server;
       case 'error':
         return AlertCircle;
       default:
@@ -66,9 +78,12 @@ const RecentActivity = () => {
             endpoint_disabled: 'text-gray-500',
             endpoint_suspended: 'text-orange-500',
             endpoint_draft: 'text-yellow-500',
+      endpoint_deleted: 'text-red-500',
       token_generated: 'text-blue-500',
       token_used: 'text-blue-500',
       token_revoked: 'text-gray-500',
+      token_deleted: 'text-red-500',
+      api_key_deleted: 'text-red-500',
       error: 'text-red-500',
     };
     return colorClasses[type] || 'text-gray-500';
@@ -84,6 +99,9 @@ const RecentActivity = () => {
       token_generated: 'bg-blue-100',
       token_used: 'bg-blue-100',
       token_revoked: 'bg-gray-100',
+      token_deleted: 'bg-red-100',
+      api_key_deleted: 'bg-red-100',
+      endpoint_deleted: 'bg-red-100',
       error: 'bg-red-100',
     };
     return bgClasses[type] || 'bg-snowflake-100';

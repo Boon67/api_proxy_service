@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Shield, Lock, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { apiService } from '../services/api';
 import toast from 'react-hot-toast';
 
 const SecuritySettingsModal = ({ isOpen, onClose }) => {
@@ -30,15 +31,18 @@ const SecuritySettingsModal = ({ isOpen, onClose }) => {
 
     setSaving(true);
     try {
-      // TODO: Implement password change API endpoint
-      // await apiService.changePassword(currentPassword, newPassword);
-      toast.success('Password changed successfully');
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
-      onClose();
+      const response = await apiService.changePassword(currentPassword, newPassword);
+      if (response.success) {
+        toast.success('Password changed successfully');
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmPassword('');
+        onClose();
+      } else {
+        toast.error(response.error || 'Failed to change password');
+      }
     } catch (error) {
-      toast.error(error.message || 'Failed to change password');
+      toast.error(error.response?.data?.error || error.message || 'Failed to change password');
     } finally {
       setSaving(false);
     }
@@ -144,12 +148,6 @@ const SecuritySettingsModal = ({ isOpen, onClose }) => {
                   </div>
                 </div>
 
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-                  <p className="text-xs text-yellow-700">
-                    <strong>Note:</strong> Password change functionality requires backend API implementation.
-                    Currently, passwords are managed through the database directly.
-                  </p>
-                </div>
 
                 <div className="flex justify-end space-x-3 pt-4">
                   <button

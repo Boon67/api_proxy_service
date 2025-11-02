@@ -3,10 +3,14 @@ import { useQuery, useQueryClient } from 'react-query';
 import { Plus, Server, Play, Power, PowerOff, Loader, Copy, Eye, Edit, Key, AlertCircle, Trash2 } from 'lucide-react';
 import { apiService } from '../services/api';
 import TestEndpointModal from '../components/TestEndpointModal';
+import APIKeyModal from '../components/APIKeyModal';
+import ConfirmationModal from '../components/ConfirmationModal';
 import toast from 'react-hot-toast';
 
 const Endpoints = () => {
   const [testModalEndpoint, setTestModalEndpoint] = useState(null);
+  const [apiKeyModal, setApiKeyModal] = useState({ isOpen: false, apiKey: null, endpointName: null });
+  const [deleteConfirmModal, setDeleteConfirmModal] = useState({ isOpen: false, endpoint: null });
   const [updatingStatus, setUpdatingStatus] = useState({});
   const [deletingEndpoint, setDeletingEndpoint] = useState(null);
   const queryClient = useQueryClient();
@@ -56,18 +60,17 @@ const Endpoints = () => {
 
   const handleGenerateAPIKey = async (endpointId) => {
     try {
+      // Find the endpoint name for the modal
+      const endpoint = endpoints?.data?.find(e => e.id === endpointId);
       const response = await apiService.generateAPIKey(endpointId);
       if (response.success) {
-        toast.success('API Key generated successfully!');
-        // Show API key in a modal or alert (key is only shown once)
+        // Show API key in modal (key is only shown once)
         if (response.data.token) {
-          const userConfirmed = window.confirm(
-            `Your API Key (shown only once):\n\n${response.data.token}\n\nCopy this API key now - it won't be shown again!`
-          );
-          if (userConfirmed) {
-            await navigator.clipboard.writeText(response.data.token);
-            toast.success('API Key copied to clipboard');
-          }
+          setApiKeyModal({
+            isOpen: true,
+            apiKey: response.data.token,
+            endpointName: endpoint?.name || null
+          });
         }
         // Refresh endpoints to update hasToken status
         queryClient.invalidateQueries('endpoints');
@@ -78,10 +81,13 @@ const Endpoints = () => {
     }
   };
 
-  const handleDelete = async (endpoint) => {
-    if (!window.confirm(`Are you sure you want to delete the endpoint "${endpoint.name}"?\n\nThis action cannot be undone and will also revoke any associated API keys.`)) {
-      return;
-    }
+  const handleDeleteClick = (endpoint) => {
+    setDeleteConfirmModal({ isOpen: true, endpoint });
+  };
+
+  const handleDeleteConfirm = async () => {
+    const { endpoint } = deleteConfirmModal;
+    if (!endpoint) return;
 
     setDeletingEndpoint(endpoint.id);
     try {
@@ -98,6 +104,7 @@ const Endpoints = () => {
       toast.error(error.response?.data?.error || 'An error occurred while deleting the endpoint');
     } finally {
       setDeletingEndpoint(null);
+      setDeleteConfirmModal({ isOpen: false, endpoint: null });
     }
   };
 
@@ -159,20 +166,54 @@ const Endpoints = () => {
         </div>
       ) : (
         <div className="bg-white shadow overflow-hidden sm:rounded-md">
-          <ul className="divide-y divide-snowflake-200">
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Type</th>
+                  <th>Method</th>
+                  <th>Rate Limit</th>
+                  <th>Tags</th>
+                  <th>API Key</th>
+                  <th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
             {endpoints?.data?.map((endpoint) => (
-              <li key={endpoint.id}>
-                <div className="px-4 py-4 flex items-center justify-between">
-                  <div className="flex items-center">
-                    <div className="flex-shrink-0">
-                      <Server className="h-8 w-8 text-snowflake-400" />
-                    </div>
-                    <div className="ml-4">
+                  <tr key={endpoint.id}>
+                    <td>
                       <div className="flex items-center">
-                        <h3 className="text-sm font-medium text-snowflake-900">
+                        <Server className="h-5 w-5 text-snowflake-400 mr-2" />
+                        <div>
+                          <div className="text-sm font-small text-snowflake-900">
                           {endpoint.name}
-                        </h3>
-                        <span className={`ml-2 badge ${
+                          </div>
+                          {endpoint.description && (
+                            <div className="mt-1 text-xs text-snowflake-500">
+                              {endpoint.description.length > 60 ? `${endpoint.description.substring(0, 60)}...` : endpoint.description}
+                            </div>
+                          )}
+                          {endpoint.url && (
+                            <div className="mt-1 flex items-center gap-1">
+                              <code className="text-xs text-primary-600 bg-primary-50 px-1.5 py-0.5 rounded">
+                                {endpoint.url.length > 40 ? `${endpoint.url.substring(0, 40)}...` : endpoint.url}
+                              </code>
+                              <button
+                                onClick={() => handleCopyLink(endpoint.url)}
+                                className="p-0.5 text-primary-600 hover:text-primary-800 hover:bg-primary-100 rounded"
+                                title="Copy endpoint URL"
+                              >
+                                <Copy className="h-3 w-3" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`badge ${
                           endpoint.status === 'active' ? 'badge-success' : 
                           endpoint.status === 'suspended' ? 'badge-error' : 
                           'badge-warning'
@@ -181,24 +222,22 @@ const Endpoints = () => {
                            endpoint.status === 'suspended' ? 'Suspended' : 
                            'Draft'}
                         </span>
-                        {!endpoint.hasToken && (
-                          <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
-                            <AlertCircle className="h-3 w-3" />
-                            No API Key
+                    </td>
+                    <td className="text-sm text-snowflake-600">
+                      {endpoint.type || 'N/A'}
+                    </td>
+                    <td className="text-sm text-snowflake-600">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-snowflake-100 text-snowflake-800">
+                        {endpoint.method || 'GET'}
                           </span>
-                        )}
-                      </div>
-                      <p className="text-sm text-snowflake-500">
-                        {endpoint.description || 'No description'}
-                      </p>
-                      <div className="mt-1 flex items-center text-xs text-snowflake-500">
-                        <span className="mr-4">Type: {endpoint.type}</span>
-                        <span className="mr-4">Method: {endpoint.method}</span>
-                        <span>Rate Limit: {endpoint.rateLimit}/min</span>
-                      </div>
-                      {endpoint.tags && endpoint.tags.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {endpoint.tags.slice(0, 5).map((tag) => (
+                    </td>
+                    <td className="text-sm text-snowflake-600">
+                      {endpoint.rateLimit || 0}/min
+                    </td>
+                     <td>
+                      {endpoint.tags && endpoint.tags.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {endpoint.tags.slice(0, 3).map((tag) => (
                             <span
                               key={tag.id}
                               className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium text-white"
@@ -207,34 +246,35 @@ const Endpoints = () => {
                               {tag.name}
                             </span>
                           ))}
-                          {endpoint.tags.length > 5 && (
+                          {endpoint.tags.length > 3 && (
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium text-snowflake-600 bg-snowflake-100">
-                              +{endpoint.tags.length - 5} more
+                              +{endpoint.tags.length - 3}
                             </span>
                           )}
                         </div>
+                      ) : (
+                        <span className="text-xs text-snowflake-400">No tags</span>
                       )}
-                      {endpoint.url && (
-                        <div className="mt-2 flex items-center gap-2">
-                          <code className="text-xs text-primary-600 bg-primary-50 px-2 py-1 rounded">
-                            {endpoint.url}
-                          </code>
-                          <button
-                            onClick={() => handleCopyLink(endpoint.url)}
-                            className="p-1 text-primary-600 hover:text-primary-800 hover:bg-primary-100 rounded"
-                            title="Copy endpoint URL"
-                          >
-                            <Copy className="h-3 w-3" />
-                          </button>
-                        </div>
+                    </td>
+                    <td>
+                      {endpoint.hasToken ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                          <Key className="h-3 w-3" />
+                          Has Key
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+                          <AlertCircle className="h-3 w-3" />
+                          No Key
+                        </span>
                       )}
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-2">
+                    </td>
+                    <td>
+                      <div className="flex items-center justify-end space-x-1">
                   {!endpoint.hasToken && (
                     <button
                       onClick={() => handleGenerateAPIKey(endpoint.id)}
-                      className="p-2 rounded bg-yellow-100 text-yellow-600 hover:bg-yellow-200"
+                            className="p-2 rounded bg-yellow-100 text-yellow-600 hover:bg-yellow-200 transition-colors"
                       title="Generate API Key (required for activation)"
                     >
                       <Key className="h-4 w-4" />
@@ -244,11 +284,11 @@ const Endpoints = () => {
                       <button
                         onClick={() => handleStatusToggle(endpoint)}
                         disabled={updatingStatus[endpoint.id] || !endpoint.hasToken}
-                        className={`p-2 rounded ${
+                            className={`p-2 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                           endpoint.status === 'active' || (endpoint.isActive && endpoint.status !== 'suspended')
                             ? 'bg-orange-100 text-orange-600 hover:bg-orange-200'
                             : 'bg-green-100 text-green-600 hover:bg-green-200'
-                        } disabled:opacity-50`}
+                            }`}
               title={
                 !endpoint.hasToken 
                   ? 'API Key required - generate API key first'
@@ -268,29 +308,29 @@ const Endpoints = () => {
                     )}
                     <button
                       onClick={() => setTestModalEndpoint(endpoint)}
-                      className="p-2 rounded bg-primary-100 text-primary-600 hover:bg-primary-200"
+                          className="p-2 rounded bg-primary-100 text-primary-600 hover:bg-primary-200 transition-colors"
                       title="Test endpoint"
                     >
                       <Play className="h-4 w-4" />
                     </button>
                     <a
                       href={`/endpoints/${endpoint.id}`}
-                      className="p-2 rounded bg-snowflake-100 text-snowflake-600 hover:bg-snowflake-200"
+                          className="p-2 rounded bg-snowflake-100 text-snowflake-600 hover:bg-snowflake-200 transition-colors"
                       title="View endpoint"
                     >
                       <Eye className="h-4 w-4" />
                     </a>
                     <a
                       href={`/endpoints/${endpoint.id}/edit`}
-                      className="p-2 rounded bg-snowflake-100 text-snowflake-600 hover:bg-snowflake-200"
+                          className="p-2 rounded bg-snowflake-100 text-snowflake-600 hover:bg-snowflake-200 transition-colors"
                       title="Edit endpoint"
                     >
                       <Edit className="h-4 w-4" />
                     </a>
                     <button
-                      onClick={() => handleDelete(endpoint)}
+                      onClick={() => handleDeleteClick(endpoint)}
                       disabled={deletingEndpoint === endpoint.id}
-                      className="p-2 rounded bg-red-100 text-red-600 hover:bg-red-200 disabled:opacity-50"
+                          className="p-2 rounded bg-red-100 text-red-600 hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                       title="Delete endpoint"
                     >
                       {deletingEndpoint === endpoint.id ? (
@@ -300,10 +340,12 @@ const Endpoints = () => {
                       )}
                     </button>
                   </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
                 </div>
-              </li>
-            ))}
-          </ul>
         </div>
       )}
 
@@ -312,6 +354,26 @@ const Endpoints = () => {
         isOpen={!!testModalEndpoint}
         onClose={() => setTestModalEndpoint(null)}
         endpoint={testModalEndpoint}
+      />
+
+      {/* API Key Modal */}
+      <APIKeyModal
+        isOpen={apiKeyModal.isOpen}
+        onClose={() => setApiKeyModal({ isOpen: false, apiKey: null, endpointName: null })}
+        apiKey={apiKeyModal.apiKey}
+        endpointName={apiKeyModal.endpointName}
+      />
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={deleteConfirmModal.isOpen}
+        onClose={() => setDeleteConfirmModal({ isOpen: false, endpoint: null })}
+        onConfirm={handleDeleteConfirm}
+        title="Delete Endpoint"
+        message={deleteConfirmModal.endpoint ? `Are you sure you want to delete the endpoint "${deleteConfirmModal.endpoint.name}"?\n\nThis action cannot be undone and will also revoke any associated API keys.` : ''}
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
       />
     </div>
   );

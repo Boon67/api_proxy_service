@@ -94,8 +94,8 @@ const Dashboard = () => {
           value={stats?.data?.endpoints?.total || 0}
           icon={Server}
           color="blue"
-          change={stats?.data?.endpoints?.change || 0}
-          changeLabel="from last month"
+          change={undefined}
+          changeLabel={undefined}
         />
         <StatsCard
           title="Active Endpoints"
@@ -110,8 +110,8 @@ const Dashboard = () => {
           value={stats?.data?.tokens?.active || 0}
           icon={Key}
           color="purple"
-          change={stats?.data?.tokens?.change || 0}
-          changeLabel="from last month"
+          change={undefined}
+          changeLabel={undefined}
         />
         <StatsCard
           title="Total Tags"

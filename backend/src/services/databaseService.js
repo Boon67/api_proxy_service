@@ -67,6 +67,18 @@ class DatabaseService {
     await this.executeQuery(sql, [username.toUpperCase()]);
   }
 
+  async updateUserPassword(username, passwordHash) {
+    await this.getConnection(); // Ensure dbConfig is initialized
+    const sql = `
+      UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.USERS
+      SET PASSWORD_HASH = ?,
+          UPDATED_AT = CURRENT_TIMESTAMP()
+      WHERE UPPER(USERNAME) = UPPER(?)
+    `;
+    await this.executeQuery(sql, [passwordHash, username]);
+    return true;
+  }
+
   async createUser(userData) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const userId = uuidv4();
@@ -98,10 +110,10 @@ class DatabaseService {
       const sql = `
         SELECT e.ENDPOINT_ID, e.NAME, e.DESCRIPTION, e.TYPE, e.TARGET, e.METHOD, 
                e.PARAMETERS, e.RATE_LIMIT, e.IS_ACTIVE, e.CREATED_AT, e.UPDATED_AT, 
-               e.CREATED_BY, e.METADATA, e.STATUS,
-               CASE WHEN t.TOKEN_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
+               e.CREATED_BY, e.METADATA, e.STATUS, e.PATH,
+               CASE WHEN t.API_KEY_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
         FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
-        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS t 
+        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
           ON e.ENDPOINT_ID = t.ENDPOINT_ID AND t.IS_ACTIVE = TRUE
         ORDER BY e.CREATED_AT DESC
       `;
@@ -114,13 +126,33 @@ class DatabaseService {
       return endpoints;
     } catch (e) {
       // STATUS column doesn't exist - fallback query without STATUS
+      // Try including PATH, fallback if column doesn't exist
+      try {
+        const sql = `
+          SELECT e.ENDPOINT_ID, e.NAME, e.DESCRIPTION, e.TYPE, e.TARGET, e.METHOD, 
+                 e.PARAMETERS, e.RATE_LIMIT, e.IS_ACTIVE, e.CREATED_AT, e.UPDATED_AT, 
+                 e.CREATED_BY, e.METADATA, e.PATH,
+                 CASE WHEN t.API_KEY_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
+          FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
+          LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
+            ON e.ENDPOINT_ID = t.ENDPOINT_ID AND t.IS_ACTIVE = TRUE
+          ORDER BY e.CREATED_AT DESC
+        `;
+        const result = await this.executeQuery(sql);
+        const endpoints = [];
+        for (const row of result.rows) {
+          endpoints.push(await this.mapEndpointRow(row));
+        }
+        return endpoints;
+      } catch (e2) {
+        // PATH column doesn't exist - final fallback
       const sql = `
         SELECT e.ENDPOINT_ID, e.NAME, e.DESCRIPTION, e.TYPE, e.TARGET, e.METHOD, 
                e.PARAMETERS, e.RATE_LIMIT, e.IS_ACTIVE, e.CREATED_AT, e.UPDATED_AT, 
                e.CREATED_BY, e.METADATA,
-               CASE WHEN t.TOKEN_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
+               CASE WHEN t.API_KEY_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
         FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
-        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS t 
+          LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
           ON e.ENDPOINT_ID = t.ENDPOINT_ID AND t.IS_ACTIVE = TRUE
         ORDER BY e.CREATED_AT DESC
       `;
@@ -131,6 +163,7 @@ class DatabaseService {
         endpoints.push(await this.mapEndpointRow(row));
       }
       return endpoints;
+      }
     }
   }
 
@@ -141,10 +174,10 @@ class DatabaseService {
       const sql = `
         SELECT e.ENDPOINT_ID, e.NAME, e.DESCRIPTION, e.TYPE, e.TARGET, e.METHOD, 
                e.PARAMETERS, e.RATE_LIMIT, e.IS_ACTIVE, e.CREATED_AT, e.UPDATED_AT, 
-               e.CREATED_BY, e.METADATA, e.STATUS,
-               CASE WHEN t.TOKEN_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
+               e.CREATED_BY, e.METADATA, e.STATUS, e.PATH,
+               CASE WHEN t.API_KEY_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
         FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
-        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS t 
+        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
           ON e.ENDPOINT_ID = t.ENDPOINT_ID AND t.IS_ACTIVE = TRUE
         WHERE e.ENDPOINT_ID = ?
       `;
@@ -152,20 +185,71 @@ class DatabaseService {
       if (result.rows.length === 0) return null;
       return this.mapEndpointRow(result.rows[0]);
     } catch (e) {
-      // STATUS column doesn't exist - fallback query without STATUS
+      // STATUS or PATH column doesn't exist - fallback query
+      try {
+        const sql = `
+          SELECT e.ENDPOINT_ID, e.NAME, e.DESCRIPTION, e.TYPE, e.TARGET, e.METHOD, 
+                 e.PARAMETERS, e.RATE_LIMIT, e.IS_ACTIVE, e.CREATED_AT, e.UPDATED_AT, 
+                 e.CREATED_BY, e.METADATA, e.STATUS, e.PATH,
+                 CASE WHEN t.API_KEY_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
+          FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
+          LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
+            ON e.ENDPOINT_ID = t.ENDPOINT_ID AND t.IS_ACTIVE = TRUE
+          WHERE e.ENDPOINT_ID = ?
+        `;
+        const result = await this.executeQuery(sql, [endpointId]);
+        if (result.rows.length === 0) return null;
+        return this.mapEndpointRow(result.rows[0]);
+      } catch (e2) {
+        // PATH column doesn't exist - final fallback
       const sql = `
         SELECT e.ENDPOINT_ID, e.NAME, e.DESCRIPTION, e.TYPE, e.TARGET, e.METHOD, 
                e.PARAMETERS, e.RATE_LIMIT, e.IS_ACTIVE, e.CREATED_AT, e.UPDATED_AT, 
                e.CREATED_BY, e.METADATA,
-               CASE WHEN t.TOKEN_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
+               CASE WHEN t.API_KEY_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
         FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
-        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS t 
+          LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
           ON e.ENDPOINT_ID = t.ENDPOINT_ID AND t.IS_ACTIVE = TRUE
         WHERE e.ENDPOINT_ID = ?
       `;
       const result = await this.executeQuery(sql, [endpointId]);
       if (result.rows.length === 0) return null;
       return this.mapEndpointRow(result.rows[0]);
+      }
+    }
+  }
+
+  async getEndpointByPath(path) {
+    await this.getConnection(); // Ensure dbConfig is initialized
+    // Try query with STATUS first, fallback if column doesn't exist
+    try {
+      const sql = `
+        SELECT e.ENDPOINT_ID, e.NAME, e.DESCRIPTION, e.TYPE, e.TARGET, e.METHOD, 
+               e.PARAMETERS, e.RATE_LIMIT, e.IS_ACTIVE, e.CREATED_AT, e.UPDATED_AT, 
+               e.CREATED_BY, e.METADATA, e.STATUS, e.PATH,
+               CASE WHEN t.API_KEY_ID IS NOT NULL AND t.IS_ACTIVE = TRUE THEN TRUE ELSE FALSE END AS HAS_TOKEN
+        FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
+        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
+          ON e.ENDPOINT_ID = t.ENDPOINT_ID AND t.IS_ACTIVE = TRUE
+        WHERE e.PATH = ? AND e.PATH IS NOT NULL
+      `;
+      const result = await this.executeQuery(sql, [path]);
+      if (result.rows.length === 0) return null;
+      return this.mapEndpointRow(result.rows[0]);
+    } catch (e) {
+      // PATH column doesn't exist - return null
+      return null;
+    }
+  }
+
+  async getEndpointByIdOrPath(identifier) {
+    // Check if identifier is a UUID (36 chars with hyphens) or a custom path
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    
+    if (uuidRegex.test(identifier)) {
+      return await this.getEndpointById(identifier);
+    } else {
+      return await this.getEndpointByPath(identifier);
     }
   }
 
@@ -178,6 +262,46 @@ class DatabaseService {
        endpointData.isActive === true ? 'active' : 'draft');
     const isActive = status === 'active';
     
+    // Validate and normalize path if provided
+    let path = endpointData.path ? endpointData.path.trim() : null;
+    if (path) {
+      // Validate path is URL-safe (alphanumeric, hyphens, underscores only)
+      const pathRegex = /^[a-zA-Z0-9_-]+$/;
+      if (!pathRegex.test(path)) {
+        throw new Error('Path must contain only alphanumeric characters, hyphens, and underscores');
+      }
+      // Check if path already exists
+      const existing = await this.getEndpointByPath(path);
+      if (existing) {
+        throw new Error(`Path "${path}" is already in use by another endpoint`);
+      }
+    }
+
+    // Try to include PATH column, fallback if it doesn't exist
+    try {
+      const sql = `
+        INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS
+          (ENDPOINT_ID, NAME, DESCRIPTION, TYPE, TARGET, METHOD, PARAMETERS, 
+           RATE_LIMIT, STATUS, IS_ACTIVE, CREATED_BY, METADATA, PATH)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      await this.executeQuery(sql, [
+        endpointId,
+        endpointData.name,
+        endpointData.description || null,
+        endpointData.type,
+        endpointData.target,
+        endpointData.method || 'GET',
+        endpointData.parameters ? JSON.stringify(endpointData.parameters) : null,
+        endpointData.rateLimit || 100,
+        status,
+        isActive, // Keep IS_ACTIVE for backward compatibility
+        endpointData.createdBy || 'admin',
+        endpointData.metadata ? JSON.stringify(endpointData.metadata) : null,
+        path
+      ]);
+    } catch (e) {
+      // PATH column doesn't exist - insert without it
     const sql = `
       INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS
         (ENDPOINT_ID, NAME, DESCRIPTION, TYPE, TARGET, METHOD, PARAMETERS, 
@@ -194,10 +318,11 @@ class DatabaseService {
       endpointData.parameters ? JSON.stringify(endpointData.parameters) : null,
       endpointData.rateLimit || 100,
       status,
-      isActive, // Keep IS_ACTIVE for backward compatibility
+        isActive,
       endpointData.createdBy || 'admin',
       endpointData.metadata ? JSON.stringify(endpointData.metadata) : null
     ]);
+    }
     return await this.getEndpointById(endpointId);
   }
 
@@ -223,6 +348,67 @@ class DatabaseService {
       }
     }
     
+    // Validate and normalize path if provided
+    // If path is explicitly provided (even if empty string), we should update it
+    let path = undefined;
+    if (endpointData.path !== undefined) {
+      if (endpointData.path && typeof endpointData.path === 'string') {
+        path = endpointData.path.trim();
+        if (path === '') {
+          path = null; // Empty string means clear the path
+        } else {
+          // Validate path is URL-safe (alphanumeric, hyphens, underscores only)
+          const pathRegex = /^[a-zA-Z0-9_-]+$/;
+          if (!pathRegex.test(path)) {
+            throw new Error('Path must contain only alphanumeric characters, hyphens, and underscores');
+          }
+          // Check if path already exists (and is not the current endpoint)
+          const existing = await this.getEndpointByPath(path);
+          if (existing && existing.id !== endpointId) {
+            throw new Error(`Path "${path}" is already in use by another endpoint`);
+          }
+        }
+      } else {
+        path = null; // Explicitly set to null to clear
+      }
+    }
+
+    // Try to include PATH column, fallback if it doesn't exist
+    try {
+      if (path !== undefined) {
+        const sql = `
+          UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS
+          SET NAME = ?,
+              DESCRIPTION = ?,
+              TYPE = ?,
+              TARGET = ?,
+              METHOD = ?,
+              PARAMETERS = ?,
+              RATE_LIMIT = ?,
+              STATUS = ?,
+              IS_ACTIVE = ?,
+              UPDATED_AT = CURRENT_TIMESTAMP(),
+              UPDATED_BY = ?,
+              METADATA = ?,
+              PATH = ?
+          WHERE ENDPOINT_ID = ?
+        `;
+        await this.executeQuery(sql, [
+          endpointData.name,
+          endpointData.description || null,
+          endpointData.type,
+          endpointData.target,
+          endpointData.method || 'GET',
+          endpointData.parameters ? JSON.stringify(endpointData.parameters) : null,
+          endpointData.rateLimit || 100,
+          status,
+          isActive,
+          endpointData.updatedBy || endpointData.createdBy || 'system',
+          endpointData.metadata ? JSON.stringify(endpointData.metadata) : null,
+          path,
+          endpointId
+        ]);
+      } else {
     const sql = `
       UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS
       SET NAME = ?,
@@ -253,11 +439,61 @@ class DatabaseService {
       endpointData.metadata ? JSON.stringify(endpointData.metadata) : null,
       endpointId
     ]);
+      }
+    } catch (e) {
+      // PATH column doesn't exist - update without it
+      const sql = `
+        UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS
+        SET NAME = ?,
+            DESCRIPTION = ?,
+            TYPE = ?,
+            TARGET = ?,
+            METHOD = ?,
+            PARAMETERS = ?,
+            RATE_LIMIT = ?,
+            STATUS = ?,
+            IS_ACTIVE = ?,
+            UPDATED_AT = CURRENT_TIMESTAMP(),
+            UPDATED_BY = ?,
+            METADATA = ?
+        WHERE ENDPOINT_ID = ?
+      `;
+      await this.executeQuery(sql, [
+        endpointData.name,
+        endpointData.description || null,
+        endpointData.type,
+        endpointData.target,
+        endpointData.method || 'GET',
+        endpointData.parameters ? JSON.stringify(endpointData.parameters) : null,
+        endpointData.rateLimit || 100,
+        status,
+        isActive,
+        endpointData.updatedBy || endpointData.createdBy || 'system',
+        endpointData.metadata ? JSON.stringify(endpointData.metadata) : null,
+        endpointId
+      ]);
+    }
     return await this.getEndpointById(endpointId);
   }
 
-  async deleteEndpoint(endpointId) {
+  async deleteEndpoint(endpointId, deletedBy = 'system') {
     await this.getConnection(); // Ensure dbConfig is initialized
+    // Get endpoint info before deletion for activity log
+    const endpoint = await this.getEndpointById(endpointId);
+    
+    // Log deletion activity before deleting
+    if (endpoint) {
+      await this.logActivity({
+        type: 'endpoint_deleted',
+        user: deletedBy,
+        entityName: endpoint.name,
+        entityType: 'endpoint',
+        endpointId: endpointId
+      }).catch(err => {
+        logger.warn('Could not log endpoint deletion activity:', err.message);
+      });
+    }
+    
     const sql = `
       DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS
       WHERE ENDPOINT_ID = ?
@@ -270,7 +506,7 @@ class DatabaseService {
     // Derive status from STATUS column or IS_ACTIVE
     const status = row.STATUS || (row.IS_ACTIVE ? 'active' : 'suspended');
     
-    // hasToken is included in the row if we joined with PAT_TOKENS
+    // hasToken is included in the row if we joined with API_KEYS
     const hasToken = row.HAS_TOKEN !== undefined ? row.HAS_TOKEN : false;
     
     // Get tags for this endpoint (gracefully handle if tags table doesn't exist yet)
@@ -285,6 +521,7 @@ class DatabaseService {
     return {
       id: row.ENDPOINT_ID,
       name: row.NAME,
+      path: row.PATH || null,
       description: row.DESCRIPTION || '',
       type: row.TYPE,
       target: row.TARGET,
@@ -309,19 +546,25 @@ class DatabaseService {
   async createPATToken(endpointId, tokenHash, metadata = {}) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const tokenId = uuidv4();
-    // For VARIANT columns, we need to use PARSE_JSON or pass as object
-    // Snowflake SDK should handle object conversion, but let's use PARSE_JSON to be safe
+    // For VARIANT columns, Snowflake doesn't allow PARSE_JSON in VALUES clause
+    // Use INSERT with SELECT statement instead to work around this limitation
+    const metadataObj = metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0 
+      ? metadata 
+      : (metadata.createdBy ? { createdBy: metadata.createdBy } : {});
+    const metadataJson = JSON.stringify(metadataObj);
+    // Escape single quotes in JSON string for SQL injection safety
+    const escapedJson = metadataJson.replace(/'/g, "''");
+    // Use INSERT ... SELECT pattern to work around Snowflake's VALUES clause limitation
     const sql = `
-      INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS
-        (TOKEN_ID, TOKEN, ENDPOINT_ID, CREATED_BY, METADATA)
-      VALUES (?, ?, ?, ?, PARSE_JSON(?))
+      INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
+        (API_KEY_ID, API_KEY, ENDPOINT_ID, CREATED_BY, METADATA)
+      SELECT ?, ?, ?, ?, TRY_PARSE_JSON('${escapedJson}')
     `;
     await this.executeQuery(sql, [
       tokenId,
       tokenHash,
       endpointId,
-      metadata.createdBy || 'admin',
-      metadata && Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : '{}'
+      metadata.createdBy || 'admin'
     ]);
     return await this.getPATTokenById(tokenId);
   }
@@ -329,10 +572,10 @@ class DatabaseService {
   async getPATTokenByHash(tokenHash) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
-      SELECT TOKEN_ID, TOKEN, ENDPOINT_ID, CREATED_AT, LAST_USED, 
+      SELECT API_KEY_ID, API_KEY, ENDPOINT_ID, CREATED_AT, LAST_USED, 
              USAGE_COUNT, IS_ACTIVE, CREATED_BY, METADATA
-      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS
-      WHERE TOKEN = ? AND IS_ACTIVE = TRUE
+      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
+      WHERE API_KEY = ? AND IS_ACTIVE = TRUE
     `;
     const result = await this.executeQuery(sql, [tokenHash]);
     return result.rows.length > 0 ? this.mapTokenRow(result.rows[0]) : null;
@@ -341,10 +584,10 @@ class DatabaseService {
   async getPATTokenById(tokenId) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
-      SELECT TOKEN_ID, TOKEN, ENDPOINT_ID, CREATED_AT, LAST_USED, 
+      SELECT API_KEY_ID, API_KEY, ENDPOINT_ID, CREATED_AT, LAST_USED, 
              USAGE_COUNT, IS_ACTIVE, CREATED_BY, METADATA
-      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS
-      WHERE TOKEN_ID = ?
+      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
+      WHERE API_KEY_ID = ?
     `;
     const result = await this.executeQuery(sql, [tokenId]);
     return result.rows.length > 0 ? this.mapTokenRow(result.rows[0]) : null;
@@ -353,9 +596,9 @@ class DatabaseService {
   async getPATTokenByEndpointId(endpointId) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
-      SELECT TOKEN_ID, TOKEN, ENDPOINT_ID, CREATED_AT, LAST_USED, 
+      SELECT API_KEY_ID, API_KEY, ENDPOINT_ID, CREATED_AT, LAST_USED, 
              USAGE_COUNT, IS_ACTIVE, CREATED_BY, METADATA
-      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS
+      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
       WHERE ENDPOINT_ID = ? AND IS_ACTIVE = TRUE
       ORDER BY CREATED_AT DESC
       LIMIT 1
@@ -367,31 +610,98 @@ class DatabaseService {
   async updatePATTokenUsage(tokenId) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
-      UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS
+      UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
       SET USAGE_COUNT = USAGE_COUNT + 1,
           LAST_USED = CURRENT_TIMESTAMP()
-      WHERE TOKEN_ID = ?
+      WHERE API_KEY_ID = ?
     `;
-    await this.executeQuery(sql, [tokenId]);
+    const result = await this.executeQuery(sql, [tokenId]);
+    logger.debug(`updatePATTokenUsage executed for tokenId=${tokenId}, rows affected=${result?.rowsAffected || 'unknown'}`);
+    return result;
   }
 
   async revokePATToken(tokenHash) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
-      UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS
+      UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
       SET IS_ACTIVE = FALSE
-      WHERE TOKEN = ?
+      WHERE API_KEY = ?
     `;
     await this.executeQuery(sql, [tokenHash]);
+    return true;
+  }
+
+  async deletePATToken(tokenId, deletedBy = 'system') {
+    await this.getConnection(); // Ensure dbConfig is initialized
+    
+    // Get token info before deletion for activity log
+    const token = await this.getPATTokenById(tokenId);
+    let endpoint = null;
+    if (token && token.endpointId) {
+      endpoint = await this.getEndpointById(token.endpointId).catch(() => null);
+    }
+    
+    // Log deletion activity before deleting
+    if (token && endpoint) {
+      await this.logActivity({
+        type: 'api_key_deleted',
+        user: deletedBy,
+        entityName: endpoint.name,
+        entityType: 'api_key',
+        endpointId: token.endpointId,
+        apiKeyId: tokenId
+      }).catch(err => {
+        logger.warn('Could not log API key deletion activity:', err.message);
+      });
+    }
+    
+    // First delete related records
+    // Delete token tags
+    const deleteTagsSql = `
+      DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS
+      WHERE API_KEY_ID = ?
+    `;
+    await this.executeQuery(deleteTagsSql, [tokenId]).catch(err => {
+      // If TOKEN_TAGS table doesn't exist or error, continue
+      logger.warn('Could not delete token tags:', err.message);
+    });
+
+    // Delete token usage logs
+    const deleteUsageSql = `
+      DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_USAGE_LOG
+      WHERE API_KEY_ID = ?
+    `;
+    await this.executeQuery(deleteUsageSql, [tokenId]).catch(err => {
+      // If API_USAGE_LOG table doesn't exist or error, continue
+      logger.warn('Could not delete token usage logs:', err.message);
+    });
+
+    // Note: API_AUDIT_LOG entries are kept for audit purposes, just set API_KEY_ID to NULL
+    const updateAuditSql = `
+      UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.API_AUDIT_LOG
+      SET API_KEY_ID = NULL
+      WHERE API_KEY_ID = ?
+    `;
+    await this.executeQuery(updateAuditSql, [tokenId]).catch(err => {
+      // If API_AUDIT_LOG table doesn't exist or error, continue
+      logger.warn('Could not update audit log:', err.message);
+    });
+
+    // Finally delete the token itself
+    const deleteTokenSql = `
+      DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
+      WHERE API_KEY_ID = ?
+    `;
+    await this.executeQuery(deleteTokenSql, [tokenId]);
     return true;
   }
 
   async getAllPATTokens() {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
-      SELECT TOKEN_ID, TOKEN, ENDPOINT_ID, CREATED_AT, LAST_USED, 
+      SELECT API_KEY_ID, API_KEY, ENDPOINT_ID, CREATED_AT, LAST_USED, 
              USAGE_COUNT, IS_ACTIVE, CREATED_BY, METADATA
-      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS
+      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
       ORDER BY CREATED_AT DESC
     `;
     const result = await this.executeQuery(sql);
@@ -400,8 +710,8 @@ class DatabaseService {
 
   mapTokenRow(row) {
     return {
-      id: row.TOKEN_ID,
-      token: row.TOKEN, // This will be the hash, not the actual token
+      id: row.API_KEY_ID,
+      token: row.API_KEY, // This will be the hash, not the actual token
       endpointId: row.ENDPOINT_ID,
       createdAt: row.CREATED_AT?.toISOString() || new Date().toISOString(),
       lastUsed: row.LAST_USED?.toISOString() || null,
@@ -453,7 +763,7 @@ class DatabaseService {
         COUNT(CASE WHEN IS_ACTIVE = TRUE THEN 1 END) AS ACTIVE,
         COUNT(CASE WHEN IS_ACTIVE = FALSE THEN 1 END) AS REVOKED,
         SUM(USAGE_COUNT) AS TOTAL_USAGE
-      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS
+      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
     `;
     const result = await this.executeQuery(sql);
     return result.rows[0] || { TOTAL: 0, ACTIVE: 0, REVOKED: 0, TOTAL_USAGE: 0 };
@@ -463,8 +773,12 @@ class DatabaseService {
   // ACTIVITY LOG OPERATIONS
   // =====================================================
 
-  async getEndpointUsageStats() {
+  async getEndpointUsageStats(days = 7) {
     await this.getConnection(); // Ensure dbConfig is initialized
+    // Validate days parameter
+    const validDays = [1, 7, 30, 90];
+    const dayRange = validDays.includes(parseInt(days)) ? parseInt(days) : 7;
+    
     // Check if STATUS column exists
     try {
       const sql = `
@@ -474,20 +788,27 @@ class DatabaseService {
           e.TYPE,
           COALESCE(SUM(a.REQUEST_COUNT), 0) AS TOTAL_USAGE
         FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
-        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_USAGE_LOG a 
+        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_USAGE_LOG a 
           ON e.ENDPOINT_ID = a.ENDPOINT_ID
-          AND a.LAST_USED >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
+          AND a.LAST_USED >= DATEADD(DAY, -?, CURRENT_TIMESTAMP())
         WHERE COALESCE(e.STATUS, CASE WHEN e.IS_ACTIVE = TRUE THEN 'active' ELSE 'suspended' END) = 'active'
         GROUP BY e.ENDPOINT_ID, e.NAME, e.TYPE
         ORDER BY TOTAL_USAGE DESC
       `;
-      const result = await this.executeQuery(sql);
-      return result.rows.map(row => ({
+      const result = await this.executeQuery(sql, [dayRange]);
+      logger.info(`getEndpointUsageStats (${dayRange} days): Found ${result.rows.length} endpoints with usage data`);
+      const mapped = result.rows.map(row => {
+        const usage = Number(row.TOTAL_USAGE) || 0;
+        logger.info(`Endpoint ${row.ENDPOINT_ID} (${row.NAME}): ${usage} requests`);
+        return {
         endpointId: row.ENDPOINT_ID,
         name: row.NAME,
         type: row.TYPE,
-        usage: row.TOTAL_USAGE || 0
-      }));
+          usage: usage
+        };
+      });
+      logger.info(`getEndpointUsageStats returning: ${JSON.stringify(mapped, null, 2)}`);
+      return mapped;
     } catch (e) {
       // STATUS column doesn't exist - fallback to IS_ACTIVE
       const sql = `
@@ -497,20 +818,27 @@ class DatabaseService {
           e.TYPE,
           COALESCE(SUM(a.REQUEST_COUNT), 0) AS TOTAL_USAGE
         FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
-        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_USAGE_LOG a 
+        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_USAGE_LOG a 
           ON e.ENDPOINT_ID = a.ENDPOINT_ID
-          AND a.LAST_USED >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
+          AND a.LAST_USED >= DATEADD(DAY, -?, CURRENT_TIMESTAMP())
         WHERE e.IS_ACTIVE = TRUE
         GROUP BY e.ENDPOINT_ID, e.NAME, e.TYPE
         ORDER BY TOTAL_USAGE DESC
       `;
-      const result = await this.executeQuery(sql);
-      return result.rows.map(row => ({
+      const result = await this.executeQuery(sql, [dayRange]);
+      logger.info(`getEndpointUsageStats (fallback, ${dayRange} days): Found ${result.rows.length} endpoints with usage data`);
+      const mapped = result.rows.map(row => {
+        const usage = Number(row.TOTAL_USAGE) || 0;
+        logger.info(`Endpoint ${row.ENDPOINT_ID} (${row.NAME}): ${usage} requests`);
+        return {
         endpointId: row.ENDPOINT_ID,
         name: row.NAME,
         type: row.TYPE,
-        usage: row.TOTAL_USAGE || 0
-      }));
+          usage: usage
+        };
+      });
+      logger.info(`getEndpointUsageStats (fallback) returning: ${JSON.stringify(mapped, null, 2)}`);
+      return mapped;
     }
   }
 
@@ -528,10 +856,10 @@ class DatabaseService {
       WITH current_period AS (
         SELECT 
           COUNT(DISTINCT e.ENDPOINT_ID) AS endpoints_created,
-          COUNT(DISTINCT t.TOKEN_ID) AS tokens_created,
+          COUNT(DISTINCT t.API_KEY_ID) AS tokens_created,
           SUM(t.USAGE_COUNT) AS total_usage
         FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
-        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS t 
+        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
           ON e.ENDPOINT_ID = t.ENDPOINT_ID
         WHERE e.CREATED_AT >= DATEADD(DAY, -${periodDays}, CURRENT_TIMESTAMP())
           OR t.CREATED_AT >= DATEADD(DAY, -${periodDays}, CURRENT_TIMESTAMP())
@@ -539,10 +867,10 @@ class DatabaseService {
       previous_period AS (
         SELECT 
           COUNT(DISTINCT e.ENDPOINT_ID) AS endpoints_created,
-          COUNT(DISTINCT t.TOKEN_ID) AS tokens_created,
+          COUNT(DISTINCT t.API_KEY_ID) AS tokens_created,
           SUM(t.USAGE_COUNT) AS total_usage
         FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e
-        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS t 
+        LEFT JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t 
           ON e.ENDPOINT_ID = t.ENDPOINT_ID
         WHERE (e.CREATED_AT >= DATEADD(DAY, -${periodDays * 2}, CURRENT_TIMESTAMP())
           AND e.CREATED_AT < DATEADD(DAY, -${periodDays}, CURRENT_TIMESTAMP()))
@@ -563,16 +891,28 @@ class DatabaseService {
     const historicalResult = await this.executeQuery(historicalSql);
     const history = historicalResult.rows[0] || {};
     
-    return {
-      endpoints: {
-        ...endpointStats,
+    // Normalize keys to lowercase for frontend compatibility
+    const normalizedEndpointStats = {
+      total: endpointStats.TOTAL || endpointStats.total || 0,
+      active: endpointStats.ACTIVE || endpointStats.active || 0,
+      draft: endpointStats.DRAFT || endpointStats.draft || 0,
+      suspended: endpointStats.SUSPENDED || endpointStats.suspended || 0,
+      inactive: (endpointStats.DRAFT || endpointStats.draft || 0) + (endpointStats.SUSPENDED || endpointStats.suspended || 0),
         change: (history.current_endpoints || 0) - (history.previous_endpoints || 0)
-      },
-      tokens: {
-        ...tokenStats,
+    };
+    
+    const normalizedTokenStats = {
+      total: tokenStats.TOTAL || tokenStats.total || 0,
+      active: tokenStats.ACTIVE || tokenStats.active || 0,
+      revoked: tokenStats.REVOKED || tokenStats.revoked || 0,
+      totalUsage: tokenStats.TOTAL_USAGE || tokenStats.totalUsage || 0,
         change: (history.current_tokens || 0) - (history.previous_tokens || 0),
         usageChange: (history.current_usage || 0) - (history.previous_usage || 0)
-      }
+    };
+    
+    return {
+      endpoints: normalizedEndpointStats,
+      tokens: normalizedTokenStats
     };
   }
 
@@ -580,7 +920,7 @@ class DatabaseService {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
       INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.API_AUDIT_LOG
-        (REQUEST_ID, ENDPOINT_ID, TOKEN_ID, REQUEST_METHOD, REQUEST_URL, 
+        (REQUEST_ID, ENDPOINT_ID, API_KEY_ID, REQUEST_METHOD, REQUEST_URL, 
          REQUEST_IP, USER_AGENT, REQUEST_BODY, RESPONSE_STATUS, 
          RESPONSE_TIME_MS, ERROR_MESSAGE)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -600,14 +940,53 @@ class DatabaseService {
     ]);
   }
 
+  async logActivity(activityData) {
+    await this.getConnection(); // Ensure dbConfig is initialized
+    // Log activity to API_AUDIT_LOG using a special format
+    // REQUEST_METHOD='ACTIVITY' marks this as an activity log entry
+    // REQUEST_BODY contains JSON with activity details
+    const activityBody = {
+      activityType: activityData.type, // e.g., 'endpoint_deleted', 'api_key_deleted', 'endpoint_updated'
+      user: activityData.user || 'system',
+      entityName: activityData.entityName || null,
+      entityType: activityData.entityType || null // 'endpoint' or 'api_key'
+    };
+    
+    const sql = `
+      INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.API_AUDIT_LOG
+        (REQUEST_ID, ENDPOINT_ID, API_KEY_ID, REQUEST_METHOD, REQUEST_URL, 
+         REQUEST_IP, USER_AGENT, REQUEST_BODY, RESPONSE_STATUS, 
+         RESPONSE_TIME_MS, ERROR_MESSAGE)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    await this.executeQuery(sql, [
+      uuidv4(), // REQUEST_ID
+      activityData.endpointId || null,
+      activityData.apiKeyId || null,
+      'ACTIVITY', // REQUEST_METHOD - special marker
+      null, // REQUEST_URL
+      null, // REQUEST_IP
+      null, // USER_AGENT
+      JSON.stringify(activityBody), // REQUEST_BODY contains activity data
+      200, // RESPONSE_STATUS
+      null, // RESPONSE_TIME_MS
+      null // ERROR_MESSAGE
+    ]).catch(err => {
+      logger.warn('Could not log activity:', err.message);
+      // Don't throw - activity logging shouldn't break operations
+    });
+  }
+
   async updateTokenUsage(tokenId, endpointId) {
     await this.getConnection(); // Ensure dbConfig is initialized
+    logger.info(`updateTokenUsage called: tokenId=${tokenId}, endpointId=${endpointId}`);
+    
     const sql = `
-      MERGE INTO ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_USAGE_LOG AS target
+      MERGE INTO ${this.dbConfig.database}.${this.dbConfig.schema}.API_USAGE_LOG AS target
       USING (
-        SELECT ? AS TOKEN_ID, ? AS ENDPOINT_ID, CURRENT_TIMESTAMP() AS LAST_USED
+        SELECT ? AS API_KEY_ID, ? AS ENDPOINT_ID, CURRENT_TIMESTAMP() AS LAST_USED
       ) AS source
-      ON target.TOKEN_ID = source.TOKEN_ID 
+      ON target.API_KEY_ID = source.API_KEY_ID 
         AND target.ENDPOINT_ID = source.ENDPOINT_ID
         AND DATE(target.LAST_USED) = DATE(source.LAST_USED)
       WHEN MATCHED THEN
@@ -615,10 +994,39 @@ class DatabaseService {
           REQUEST_COUNT = target.REQUEST_COUNT + 1,
           LAST_USED = source.LAST_USED
       WHEN NOT MATCHED THEN
-        INSERT (TOKEN_ID, ENDPOINT_ID, REQUEST_COUNT, LAST_USED)
-        VALUES (source.TOKEN_ID, source.ENDPOINT_ID, 1, source.LAST_USED)
+        INSERT (API_KEY_ID, ENDPOINT_ID, REQUEST_COUNT, LAST_USED)
+        VALUES (source.API_KEY_ID, source.ENDPOINT_ID, 1, source.LAST_USED)
     `;
-    await this.executeQuery(sql, [tokenId, endpointId]);
+    try {
+      logger.debug(`Executing MERGE query for API_USAGE_LOG with tokenId=${tokenId}, endpointId=${endpointId}`);
+      const result = await this.executeQuery(sql, [tokenId, endpointId]);
+      logger.info(`updateTokenUsage executed successfully: tokenId=${tokenId}, endpointId=${endpointId}, rowsAffected=${result?.rowsAffected || 'unknown'}, result keys: ${result ? Object.keys(result).join(', ') : 'none'}`);
+      
+      // Also verify the update by querying the table
+      const verifySql = `
+        SELECT REQUEST_COUNT, LAST_USED
+        FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_USAGE_LOG
+        WHERE API_KEY_ID = ? AND ENDPOINT_ID = ? 
+          AND DATE(LAST_USED) = CURRENT_DATE()
+        ORDER BY LAST_USED DESC
+        LIMIT 1
+      `;
+      try {
+        const verifyResult = await this.executeQuery(verifySql, [tokenId, endpointId]);
+        if (verifyResult.rows.length > 0) {
+          logger.info(`Verified API_USAGE_LOG entry: REQUEST_COUNT=${verifyResult.rows[0].REQUEST_COUNT}, LAST_USED=${verifyResult.rows[0].LAST_USED}`);
+        } else {
+          logger.warn(`No API_USAGE_LOG entry found after update for tokenId=${tokenId}, endpointId=${endpointId}`);
+        }
+      } catch (verifyErr) {
+        logger.warn(`Could not verify API_USAGE_LOG entry: ${verifyErr.message}`);
+      }
+      
+      return result;
+    } catch (error) {
+      logger.error(`Error in updateTokenUsage: ${error.message}`, { tokenId, endpointId, error: error.stack });
+      throw error;
+    }
   }
 
   // =====================================================
@@ -769,7 +1177,7 @@ class DatabaseService {
           
           SELECT 
             ENDPOINT_ID as activity_id,
-            ${statusExpr} as activity_type,
+            'endpoint_updated' as activity_type,
             NAME as entity_name,
             UPDATED_AT as activity_timestamp,
             ${userExpr} as user,
@@ -780,13 +1188,13 @@ class DatabaseService {
         ),
         token_activity AS (
           SELECT 
-            TOKEN_ID as activity_id,
+            API_KEY_ID as activity_id,
             'token_generated' as activity_type,
             e.NAME as entity_name,
             t.CREATED_AT as activity_timestamp,
             t.CREATED_BY as user,
             'token' as entity_type
-          FROM ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS t
+          FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t
           JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e 
             ON t.ENDPOINT_ID = e.ENDPOINT_ID
           WHERE t.CREATED_AT IS NOT NULL
@@ -794,24 +1202,66 @@ class DatabaseService {
           UNION ALL
           
           SELECT 
-            TOKEN_ID as activity_id,
+            API_KEY_ID as activity_id,
             CASE 
               WHEN IS_ACTIVE = FALSE THEN 'token_revoked'
               ELSE 'token_used'
             END as activity_type,
             e.NAME as entity_name,
+            t.LAST_USED as activity_timestamp,
+            t.CREATED_BY as user,
+            'token' as entity_type
+          FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t
+          JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e 
+            ON t.ENDPOINT_ID = e.ENDPOINT_ID
+          WHERE t.LAST_USED IS NOT NULL
+            AND t.IS_ACTIVE = TRUE
+            
+          UNION ALL
+          
+          -- Show revoked tokens (when IS_ACTIVE = FALSE)
+          SELECT 
+            API_KEY_ID as activity_id,
+            'token_revoked' as activity_type,
+            e.NAME as entity_name,
             COALESCE(t.LAST_USED, t.CREATED_AT) as activity_timestamp,
             t.CREATED_BY as user,
             'token' as entity_type
-          FROM ${this.dbConfig.database}.${this.dbConfig.schema}.PAT_TOKENS t
+          FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t
           JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e 
             ON t.ENDPOINT_ID = e.ENDPOINT_ID
-          WHERE (t.LAST_USED IS NOT NULL OR t.CREATED_AT IS NOT NULL)
+          WHERE t.IS_ACTIVE = FALSE
+        ),
+        activity_log AS (
+          -- Get activity events from API_AUDIT_LOG where REQUEST_METHOD = 'ACTIVITY'
+          SELECT 
+            REQUEST_ID as activity_id,
+            PARSE_JSON(REQUEST_BODY):activityType::STRING as activity_type,
+            PARSE_JSON(REQUEST_BODY):entityName::STRING as entity_name,
+            PARSE_JSON(REQUEST_BODY):entityType::STRING as entity_type,
+            CREATED_AT as activity_timestamp,
+            PARSE_JSON(REQUEST_BODY):user::STRING as user,
+            ENDPOINT_ID,
+            API_KEY_ID
+          FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_AUDIT_LOG
+          WHERE REQUEST_METHOD = 'ACTIVITY'
+            AND REQUEST_BODY IS NOT NULL
         )
         SELECT * FROM (
           SELECT * FROM endpoint_activity
           UNION ALL
           SELECT * FROM token_activity
+          UNION ALL
+          SELECT 
+            activity_id,
+            activity_type,
+            entity_name,
+            entity_type,
+            activity_timestamp,
+            user,
+            NULL as ENDPOINT_ID,
+            NULL as API_KEY_ID
+          FROM activity_log
         )
         ORDER BY activity_timestamp DESC
         LIMIT ?
@@ -999,7 +1449,7 @@ class DatabaseService {
       SELECT t.TAG_ID, t.NAME, t.COLOR, t.DESCRIPTION
       FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS tt
       JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.TAGS t ON tt.TAG_ID = t.TAG_ID
-      WHERE tt.TOKEN_ID = ?
+      WHERE tt.API_KEY_ID = ?
       ORDER BY t.NAME
     `;
     const result = await this.executeQuery(sql, [tokenId]);
@@ -1015,14 +1465,14 @@ class DatabaseService {
     await this.getConnection();
     // Remove existing tags
     await this.executeQuery(
-      `DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS WHERE TOKEN_ID = ?`,
+      `DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS WHERE API_KEY_ID = ?`,
       [tokenId]
     );
     // Add new tags using parameterized query
     if (tagIds && tagIds.length > 0) {
       for (const tagId of tagIds) {
         await this.executeQuery(
-          `INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS (TOKEN_ID, TAG_ID) VALUES (?, ?)`,
+          `INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS (API_KEY_ID, TAG_ID) VALUES (?, ?)`,
           [tokenId, tagId]
         );
       }

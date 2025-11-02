@@ -49,17 +49,20 @@ function getBaseUrl() {
 
 /**
  * Generates the full URL for an endpoint
- * @param {string} endpointId - The endpoint ID
+ * @param {string} endpointId - The endpoint ID (UUID)
+ * @param {string} path - Optional custom path (if provided, used instead of endpointId)
  * @param {string} token - Optional PAT token (if not provided, token must be in Authorization header)
  * @returns {string} Full endpoint URL
  */
-function getEndpointUrl(endpointId, token = null) {
+function getEndpointUrl(endpointId, path = null, token = null) {
   const baseUrl = getBaseUrl();
-  const url = `${baseUrl}/${endpointId}`;
+  // Use custom path if provided, otherwise use endpointId (UUID)
+  const identifier = path || endpointId;
+  const url = `${baseUrl}/${identifier}`;
   
   // If token is provided, add it as a query parameter (optional - can also use Authorization header)
   if (token) {
-    return `${url}?token=${token}`;
+    return `${url}?API_KEY=${token}`;
   }
   
   return url;

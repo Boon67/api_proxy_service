@@ -1,21 +1,27 @@
 import React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useForm, watch } from 'react-hook-form';
-import { useQuery } from 'react-query';
-import { Save, ArrowLeft, Play, Loader } from 'lucide-react';
+import { useQuery, useQueryClient } from 'react-query';
+import { Save, ArrowLeft, Play, Loader, Key } from 'lucide-react';
 import { apiService } from '../services/api';
 import toast from 'react-hot-toast';
 import TagSelector from '../components/TagSelector';
+import APIKeyModal from '../components/APIKeyModal';
+import ConfirmationModal from '../components/ConfirmationModal';
 
 const EditEndpoint = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { register, handleSubmit, formState: { errors }, reset, watch } = useForm();
   const type = watch('type');
   const target = watch('target');
   const [isTesting, setIsTesting] = React.useState(false);
   const [testResult, setTestResult] = React.useState(null);
   const [selectedTags, setSelectedTags] = React.useState([]);
+  const [apiKeyModal, setApiKeyModal] = React.useState({ isOpen: false, apiKey: null, endpointName: null });
+  const [replaceApiKeyModal, setReplaceApiKeyModal] = React.useState(false);
+  const [isReplacingApiKey, setIsReplacingApiKey] = React.useState(false);
 
   const { data: tagsResponse } = useQuery('tags', apiService.getTags);
   const tags = tagsResponse?.data || [];
@@ -27,7 +33,12 @@ const EditEndpoint = () => {
       enabled: !!id,
       onSuccess: (data) => {
         if (data?.data) {
-          reset(data.data);
+          // Prepare form data - convert null path to empty string for form display
+          const formData = {
+            ...data.data,
+            path: data.data.path ?? '' // Use nullish coalescing to handle null/undefined
+          };
+          reset(formData);
           // Set selected tags from endpoint
           if (data.data.tags) {
             setSelectedTags(data.data.tags.map(tag => tag.id));
@@ -58,6 +69,35 @@ const EditEndpoint = () => {
       setTestResult({ error: error.response?.data?.message || error.response?.data?.error || 'Test failed' });
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  const handleReplaceApiKeyClick = () => {
+    setReplaceApiKeyModal(true);
+  };
+
+  const handleReplaceApiKeyConfirm = async () => {
+    setIsReplacingApiKey(true);
+    try {
+      const response = await apiService.generateAPIKey(id);
+      if (response.success && response.data.token) {
+        setApiKeyModal({
+          isOpen: true,
+          apiKey: response.data.token,
+          endpointName: endpoint?.data?.name || null
+        });
+        // Refresh endpoint to update hasToken status
+        queryClient.invalidateQueries(['endpoint', id]);
+        queryClient.invalidateQueries('endpoints');
+        queryClient.invalidateQueries('activity');
+      } else {
+        toast.error(response.error || 'Failed to replace API key');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'An error occurred while replacing the API key');
+    } finally {
+      setIsReplacingApiKey(false);
+      setReplaceApiKeyModal(false);
     }
   };
 
@@ -157,6 +197,29 @@ const EditEndpoint = () => {
               rows={2}
               placeholder="Enter endpoint description"
             />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
+              Custom Path (Optional)
+            </label>
+            <input
+              type="text"
+              {...register('path', {
+                pattern: {
+                  value: /^[a-zA-Z0-9_-]+$/,
+                  message: 'Path must contain only alphanumeric characters, hyphens, and underscores'
+                }
+              })}
+              className="input text-sm py-1.5"
+              placeholder="e.g., TB1 (leave empty to use UUID)"
+            />
+            <p className="mt-0.5 text-xs text-snowflake-500">
+              Custom URL path for this endpoint. If set, use this instead of the UUID in the URL.
+            </p>
+            {errors.path && (
+              <p className="mt-0.5 text-xs text-red-600">{errors.path.message}</p>
+            )}
           </div>
 
           <div>
@@ -284,6 +347,38 @@ const EditEndpoint = () => {
             </div>
           </div>
 
+          {/* Replace API Key Section */}
+          <div className="border-t border-snowflake-200 pt-4 mt-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="block text-xs font-medium text-snowflake-700 mb-0.5">
+                  API Key Management
+                </label>
+                <p className="text-xs text-snowflake-500">
+                  Replace the API key for this endpoint. The current key will be revoked.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleReplaceApiKeyClick}
+                disabled={isReplacingApiKey}
+                className="btn btn-secondary btn-sm"
+              >
+                {isReplacingApiKey ? (
+                  <>
+                    <Loader className="h-3 w-3 mr-1.5 animate-spin" />
+                    Replacing...
+                  </>
+                ) : (
+                  <>
+                    <Key className="h-3 w-3 mr-1.5" />
+                    Replace API Key
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
           <div className="flex justify-end space-x-2 pt-2">
             <button
               type="button"
@@ -302,6 +397,26 @@ const EditEndpoint = () => {
           </div>
         </form>
       </div>
+
+      {/* API Key Modal */}
+      <APIKeyModal
+        isOpen={apiKeyModal.isOpen}
+        onClose={() => setApiKeyModal({ isOpen: false, apiKey: null, endpointName: null })}
+        apiKey={apiKeyModal.apiKey}
+        endpointName={apiKeyModal.endpointName}
+      />
+
+      {/* Replace API Key Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={replaceApiKeyModal}
+        onClose={() => setReplaceApiKeyModal(false)}
+        onConfirm={handleReplaceApiKeyConfirm}
+        title="Replace API Key"
+        message="Are you sure you want to replace the API key? The current key will be revoked and cannot be used anymore."
+        confirmText="Replace"
+        cancelText="Cancel"
+        variant="warning"
+      />
     </div>
   );
 };

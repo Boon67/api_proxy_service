@@ -194,7 +194,7 @@ print_success "Backend started (PID: $BACKEND_PID)"
 # Start frontend
 print_info "Starting frontend server..."
 cd "$PROJECT_ROOT/frontend"
-BROWSER=none npm start > ../frontend/logs/startup.log 2>&1 &
+PORT=3000 BROWSER=none npm start > "$PROJECT_ROOT/frontend/logs/startup.log" 2>&1 &
 FRONTEND_PID=$!
 
 # Wait a moment for frontend to start

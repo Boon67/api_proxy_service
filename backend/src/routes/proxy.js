@@ -6,15 +6,48 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
-// Middleware to validate PAT token
+// Middleware to validate API key (PAT token)
 const validatePATToken = async (req, res, next) => {
-  const token = req.params.token;
+  // Try to get token from multiple sources (in order of preference):
+  // 1. X-API-Key header - highest priority
+  // 2. Query parameter (?API_KEY=... or ?token=...)
+  // 3. URL path parameter (/:token) - lowest priority
+  let token = null;
+  
+  // First, try X-API-Key header (highest priority)
+  if (req.headers['x-api-key']) {
+    token = req.headers['x-api-key'];
+  }
+  // Also support Authorization header for backward compatibility
+  else if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+    token = req.headers.authorization.substring(7); // Remove "Bearer " prefix
+  }
+  
+  // If not in header, try query parameters (support both API_KEY and token for backward compatibility)
+  if (!token && req.query.API_KEY) {
+    token = req.query.API_KEY;
+  } else if (!token && req.query.token) {
+    token = req.query.token;
+  }
+  
+  // If still not found, try path parameter
+  // Only use path parameter as token if it looks like a token (UUID format or long hex string)
+  // Don't use short custom paths (like "TB1") as tokens
+  if (!token && req.params.token) {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const longHexRegex = /^[0-9a-f]{64}$/i; // SHA256 hash length
+    // Only use path parameter as token if it looks like a UUID or a long token hash
+    if (uuidRegex.test(req.params.token) || longHexRegex.test(req.params.token)) {
+      token = req.params.token;
+    }
+    // Otherwise, assume req.params.token is a custom path and token should come from header/query
+  }
   
   if (!token) {
     return res.status(401).json({
       success: false,
       error: 'Unauthorized',
-      message: 'PAT token required'
+      message: 'API key required. Provide API key in URL path, X-API-Key header, or query parameter (?API_KEY=... or ?token=...)'
     });
   }
 
@@ -23,7 +56,7 @@ const validatePATToken = async (req, res, next) => {
     return res.status(401).json({
       success: false,
       error: 'Unauthorized',
-      message: 'Invalid or expired PAT token'
+      message: 'Invalid or expired API key'
     });
   }
 
@@ -32,8 +65,34 @@ const validatePATToken = async (req, res, next) => {
 };
 
 // Middleware to get endpoint data
+// This middleware now handles both UUID-based tokens and custom path-based lookups
 const getEndpointData = async (req, res, next) => {
-  const endpoint = await databaseService.getEndpointById(req.tokenData.endpointId);
+  let endpoint = null;
+  
+  // Check if path parameter is a custom path (not a UUID) or a UUID
+  // The URL pattern is /api/proxy/:pathOrToken where pathOrToken could be a custom path or UUID
+  if (req.params.token) {
+    // Try to get endpoint by path/UUID first
+    endpoint = await databaseService.getEndpointByIdOrPath(req.params.token);
+  }
+  
+  // If endpoint found, validate that the API key matches
+  if (endpoint && req.tokenData) {
+    // Validate that the token's endpointId matches the endpoint found
+    if (req.tokenData.endpointId !== endpoint.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden',
+        message: 'API key does not match this endpoint'
+      });
+    }
+  } else if (!endpoint) {
+    // If no endpoint found and we have token data, try getting endpoint from token
+    if (req.tokenData && req.tokenData.endpointId) {
+      endpoint = await databaseService.getEndpointById(req.tokenData.endpointId);
+    }
+  }
+  
   if (!endpoint) {
     return res.status(404).json({
       success: false,
@@ -127,9 +186,26 @@ const executeEndpoint = async (req, res) => {
       }).catch(err => logger.error('Error logging API request:', err));
 
       // Update token usage (async, don't wait)
+      // Note: tokenData.id should be set from validatePATToken, but also update API_KEYS.USAGE_COUNT
       if (tokenData?.id) {
+        logger.info(`Updating token usage: tokenId=${tokenData.id}, endpointId=${endpoint.id}, endpointName=${endpoint.name}`);
         databaseService.updateTokenUsage(tokenData.id, endpoint.id)
-          .catch(err => logger.error('Error updating token usage:', err));
+          .then((result) => {
+            logger.info(`Token usage updated successfully: tokenId=${tokenData.id}, endpointId=${endpoint.id}, result:`, JSON.stringify(result || {}));
+          })
+          .catch(err => {
+            logger.error('Error updating token usage:', err);
+            logger.error('Error stack:', err.stack);
+            logger.error('TokenData:', JSON.stringify(tokenData, null, 2));
+            logger.error('Endpoint:', JSON.stringify({ id: endpoint.id, name: endpoint.name }, null, 2));
+          });
+      } else {
+        logger.warn('tokenData.id is missing, cannot update token usage', {
+          tokenDataKeys: tokenData ? Object.keys(tokenData) : 'tokenData is null',
+          tokenData: tokenData ? JSON.stringify(tokenData, null, 2) : 'null',
+          endpointId: endpoint.id,
+          endpointName: endpoint.name
+        });
       }
 
       res.json({
@@ -178,16 +254,11 @@ const executeEndpoint = async (req, res) => {
   }
 };
 
-// GET /proxy/:token - Execute GET endpoint
+// Routes that support token in path, Authorization header, or query parameter
+// The validatePATToken middleware checks all three sources
 router.get('/:token', validatePATToken, getEndpointData, validateMethod, executeEndpoint);
-
-// POST /proxy/:token - Execute POST endpoint
 router.post('/:token', validatePATToken, getEndpointData, validateMethod, executeEndpoint);
-
-// PUT /proxy/:token - Execute PUT endpoint
 router.put('/:token', validatePATToken, getEndpointData, validateMethod, executeEndpoint);
-
-// DELETE /proxy/:token - Execute DELETE endpoint
 router.delete('/:token', validatePATToken, getEndpointData, validateMethod, executeEndpoint);
 
 // GET /proxy/:token/info - Get endpoint information
