@@ -91,7 +91,7 @@ The end-to-end test creates the following **test resources** (with `_TEST` suffi
 - **Database**: `API_PROXY_TEST`
 - **Warehouse**: `API_PROXY_WH_TEST`
 - **Role**: `API_PROXY_SERVICE_ROLE_TEST`
-- **User**: `API_PROXY_SERVICE_USER_TEST`
+- **User**: `API_PROXY_SERVICE_MANAGER_TEST`
 - **Schema**: `APP` (inside test database)
 
 These are automatically cleaned up unless you use `--skip-cleanup`.
@@ -129,7 +129,7 @@ Step 3: Testing Resource Creation
 ✅ Database API_PROXY_TEST was created
 ✅ Warehouse API_PROXY_WH_TEST was created
 ✅ Role API_PROXY_SERVICE_ROLE_TEST was created
-✅ User API_PROXY_SERVICE_USER_TEST was created
+✅ User API_PROXY_SERVICE_MANAGER_TEST was created
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Step 5: Cleaning Up Test Resources
@@ -137,7 +137,7 @@ Step 5: Cleaning Up Test Resources
 
 ✅ Database API_PROXY_TEST dropped
 ✅ Warehouse API_PROXY_WH_TEST dropped
-✅ User API_PROXY_SERVICE_USER_TEST dropped
+✅ User API_PROXY_SERVICE_MANAGER_TEST dropped
 ✅ Role API_PROXY_SERVICE_ROLE_TEST dropped
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -200,7 +200,7 @@ If tests fail partway through and leave test resources:
 snow sql << EOF
 DROP DATABASE IF EXISTS API_PROXY_TEST CASCADE;
 DROP WAREHOUSE IF EXISTS API_PROXY_WH_TEST;
-DROP USER IF EXISTS API_PROXY_SERVICE_USER_TEST;
+DROP USER IF EXISTS API_PROXY_SERVICE_MANAGER_TEST;
 DROP ROLE IF EXISTS API_PROXY_SERVICE_ROLE_TEST;
 EOF
 ```
@@ -240,6 +240,5 @@ After tests pass:
 
 - [Production Deployment Guide](./PRODUCTION_DEPLOYMENT.md)
 - [Deployment Checklist](../DEPLOYMENT_CHECKLIST.md)
-- [Cleanup Guide](./CLEANUP_GUIDE.md)
-- [Role Mode Guide](./ROLE_MODE_GUIDE.md)
+- [Deployment Guide](./DEPLOYMENT.md) - Includes cleanup instructions
 

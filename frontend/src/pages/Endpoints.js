@@ -187,12 +187,16 @@ const Endpoints = () => {
                       <div className="flex items-center">
                         <Server className="h-5 w-5 text-snowflake-400 mr-2" />
                         <div>
-                          <div className="text-sm font-small text-snowflake-900">
-                          {endpoint.name}
-                          </div>
-                          {endpoint.description && (
-                            <div className="mt-1 text-xs text-snowflake-500">
-                              {endpoint.description.length > 60 ? `${endpoint.description.substring(0, 60)}...` : endpoint.description}
+                          {endpoint.description ? (
+                            <div 
+                              className="text-sm font-small text-snowflake-900 cursor-help relative group"
+                              title={endpoint.description}
+                            >
+                              {endpoint.name}
+                            </div>
+                          ) : (
+                            <div className="text-sm font-small text-snowflake-900">
+                              {endpoint.name}
                             </div>
                           )}
                           {endpoint.url && (
@@ -258,15 +262,13 @@ const Endpoints = () => {
                     </td>
                     <td>
                       {endpoint.hasToken ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
-                          <Key className="h-3 w-3" />
-                          Has Key
-                        </span>
+                        <div className="inline-flex items-center justify-center w-6 h-6" title="API Key exists">
+                          <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                        </div>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
-                          <AlertCircle className="h-3 w-3" />
-                          No Key
-                        </span>
+                        <div className="inline-flex items-center justify-center w-6 h-6" title="No API Key">
+                          <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                        </div>
                       )}
                     </td>
                     <td>

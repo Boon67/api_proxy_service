@@ -6,19 +6,23 @@ This guide walks you through setting up a dedicated Snowflake user and role for 
 
 ## Prerequisites
 
-- Snowflake account with ACCOUNTADMIN or SYSADMIN privileges
+- Snowflake account with ACCOUNTADMIN or appropriate privileges
 - Access to create users, roles, databases, and warehouses
 - Understanding of Snowflake security model
 
 ## Quick Setup
 
-### 1. Run the Quick Setup Script
+### 1. Run the Setup Script
+
+The deployment script automatically runs the setup. For manual setup:
 
 ```sql
--- Execute the quick setup script
--- This creates a basic service account with essential permissions
-\i sql/quick_setup.sql
+-- Execute the setup script
+-- This creates the service account with essential permissions
+\i sql/setup_service_account.sql
 ```
+
+**Note**: For production deployments, use the deployment script which automatically runs `setup_service_account.sql`.
 
 ### 2. Update Configuration
 
@@ -28,11 +32,11 @@ After running the script, update your configuration files:
 ```json
 {
   "account": "your-account.snowflakecomputing.com",
-  "username": "API_PROXY_SERVICE_USER",
+  "username": "API_PROXY_SERVICE_MANAGER",
   "password": "ChangeThisPassword123!",
   "warehouse": "API_PROXY_WH",
   "database": "API_PROXY",
-  "schema": "PUBLIC",
+  "schema": "APP",
   "role": "API_PROXY_SERVICE_ROLE"
 }
 ```
@@ -40,252 +44,267 @@ After running the script, update your configuration files:
 **Environment Variables:**
 ```bash
 export SNOWFLAKE_ACCOUNT="your-account.snowflakecomputing.com"
-export SNOWFLAKE_USERNAME="API_PROXY_SERVICE_USER"
+export SNOWFLAKE_USERNAME="API_PROXY_SERVICE_MANAGER"
 export SNOWFLAKE_PASSWORD="ChangeThisPassword123!"
 export SNOWFLAKE_WAREHOUSE="API_PROXY_WH"
 export SNOWFLAKE_DATABASE="API_PROXY"
-export SNOWFLAKE_SCHEMA="PUBLIC"
+export SNOWFLAKE_SCHEMA="APP"
 export SNOWFLAKE_ROLE="API_PROXY_SERVICE_ROLE"
 ```
 
-## Complete Setup
+## Detailed Setup Steps
 
-### 1. Run the Complete Setup Script
-
-```sql
--- Execute the complete setup script
--- This creates a comprehensive service account with audit logging
-\i sql/setup_service_account.sql
-```
-
-### 2. Features of Complete Setup
-
-- **Service User**: `API_PROXY_SERVICE_USER`
-- **Service Role**: `API_PROXY_SERVICE_ROLE`
-- **Database**: `API_PROXY` with `PUBLIC` schema
-- **Warehouse**: `API_PROXY_WH` (X-SMALL, auto-suspend enabled)
-- **Audit Tables**: For logging API requests and token usage
-- **Stored Procedures**: For common operations
-- **Views**: For usage statistics and monitoring
-
-## Security Considerations
-
-### 1. Password Security
-
-**Change the default password immediately:**
-```sql
--- Change password for the service user
-ALTER USER API_PROXY_SERVICE_USER SET PASSWORD = 'YourSecurePassword123!';
-```
-
-### 2. Network Security
-
-**IP Whitelisting (Recommended):**
-```sql
--- Restrict access to specific IP addresses
-ALTER USER API_PROXY_SERVICE_USER SET NETWORK_POLICY = 'your_network_policy';
-```
-
-### 3. Data Access Control
-
-**Row-Level Security (if needed):**
-```sql
--- Example: Restrict data access based on user context
-CREATE POLICY user_data_policy ON your_table
-  FOR ALL TO API_PROXY_SERVICE_ROLE
-  USING (user_id = CURRENT_USER());
-```
-
-**Column-Level Security (if needed):**
-```sql
--- Example: Mask sensitive columns
-CREATE MASKING POLICY email_mask ON (email string)
-  RETURNS string ->
-  CASE WHEN CURRENT_ROLE() = 'API_PROXY_SERVICE_ROLE' 
-       THEN email
-       ELSE REGEXP_REPLACE(email, '(.)(.*)@', '\\1***@')
-  END;
-```
-
-## Permission Details
-
-### 1. Warehouse Permissions
-- `USAGE`: Execute queries using the warehouse
-
-### 2. Database Permissions
-- `USAGE`: Access the database
-
-### 3. Schema Permissions
-- `USAGE`: Access the schema
-- `CREATE TABLE`: Create audit/logging tables
-- `CREATE STAGE`: Create stages for file operations
-- `CREATE PROCEDURE`: Create stored procedures
-- `CREATE FUNCTION`: Create user-defined functions
-
-### 4. Data Access Permissions
-- `SELECT` on all current and future tables
-- `SELECT` on all current and future views
-- `USAGE` on all current and future procedures
-- `USAGE` on all current and future functions
-
-### 5. Information Schema Access
-- `USAGE` on `INFORMATION_SCHEMA` database
-- `SELECT` on `INFORMATION_SCHEMA` views for metadata queries
-
-## Monitoring and Auditing
-
-### 1. Audit Tables
-
-The complete setup creates two audit tables with clustering keys for optimal performance:
-
-**API_AUDIT_LOG:**
-- Logs all API requests and responses
-- Tracks performance metrics
-- Records error information
-- Clustered by (CREATED_AT, ENDPOINT_ID) for efficient time-based and endpoint queries
-
-**API_USAGE_LOG (formerly TOKEN_USAGE_LOG):**
-- Tracks token usage patterns
-- Monitors endpoint access
-- Provides usage statistics
-- Clustered by (TOKEN_ID, LAST_USED) for efficient token-based queries
-
-**Note:** Snowflake uses clustering keys instead of traditional indexes for query optimization.
-
-### 2. Performance Optimization
-
-**Clustering Keys:**
-- `API_AUDIT_LOG` is clustered by `(CREATED_AT, ENDPOINT_ID)` for efficient time-range and endpoint-specific queries
-- `API_USAGE_LOG` is clustered by `(TOKEN_ID, LAST_USED)` for efficient token-based lookups
-
-**Query Optimization Tips:**
-- Use `WHERE` clauses on clustered columns for best performance
-- Consider partitioning large tables by date if they grow very large
-- Use materialized views for frequently accessed aggregations
-- Monitor clustering depth with `SYSTEM$CLUSTERING_INFORMATION()`
-
-**Performance Monitoring:**
-- Run `sql/performance_monitoring.sql` to analyze table performance
-- Monitor clustering depth and recluster when needed
-- Use materialized views for common aggregations
-- Set up automated reclustering procedures for large tables
-
-### 3. Monitoring Views
-
-**API_USAGE_STATS:**
-- Hourly request counts by endpoint
-- Average response times
-- Error rates
-
-**TOKEN_USAGE_STATS:**
-- Token usage patterns
-- Active days per token
-- Total request counts
-
-### 3. Stored Procedures
-
-**LOG_API_REQUEST:**
-- Logs API requests to audit table
-- Can be called from the application
-
-**UPDATE_TOKEN_USAGE:**
-- Updates token usage statistics
-- Tracks access patterns
-
-## Testing the Setup
-
-### 1. Test Connection
+### Step 1: Create Database and Schema
 
 ```sql
--- Test the service account connection
-USE ROLE API_PROXY_SERVICE_ROLE;
-USE DATABASE API_PROXY;
-USE SCHEMA PUBLIC;
-
--- Test basic query
-SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();
+CREATE DATABASE IF NOT EXISTS API_PROXY;
+CREATE SCHEMA IF NOT EXISTS API_PROXY.APP;
 ```
 
-### 2. Test Permissions
+### Step 2: Create Warehouse
 
 ```sql
--- Test table creation
-CREATE TABLE test_table (id INTEGER, name VARCHAR(100));
-INSERT INTO test_table VALUES (1, 'test');
-SELECT * FROM test_table;
-DROP TABLE test_table;
+CREATE WAREHOUSE IF NOT EXISTS API_PROXY_WH
+  WAREHOUSE_SIZE = 'X-SMALL'
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE;
 ```
 
-### 3. Test Information Schema Access
+### Step 3: Create Service Role
 
 ```sql
--- Test metadata queries
-SELECT TABLE_NAME, TABLE_TYPE 
-FROM INFORMATION_SCHEMA.TABLES 
-WHERE TABLE_SCHEMA = 'PUBLIC';
+CREATE ROLE IF NOT EXISTS API_PROXY_SERVICE_ROLE
+  COMMENT = 'Role for Snowflake API Proxy Service';
 ```
 
-## Troubleshooting
+### Step 4: Create Service User
 
-### 1. Connection Issues
-
-**Check user status:**
 ```sql
-SELECT NAME, LOGIN_NAME, DISABLED, DEFAULT_ROLE, DEFAULT_WAREHOUSE
-FROM SNOWFLAKE.ACCOUNT_USAGE.USERS 
-WHERE NAME = 'API_PROXY_SERVICE_USER';
+CREATE USER IF NOT EXISTS API_PROXY_SERVICE_MANAGER
+  PASSWORD = 'ChangeThisPassword123!'
+  LOGIN_NAME = 'API_PROXY_SERVICE_MANAGER'
+  DISPLAY_NAME = 'API Proxy Service Manager'
+  EMAIL = 'api-proxy-service@yourcompany.com'
+  MUST_CHANGE_PASSWORD = FALSE
+  DEFAULT_WAREHOUSE = 'API_PROXY_WH'
+  DEFAULT_ROLE = 'API_PROXY_SERVICE_ROLE';
 ```
 
-**Check role assignment:**
+### Step 5: Grant Permissions
+
 ```sql
-SHOW GRANTS TO USER API_PROXY_SERVICE_USER;
+-- Grant warehouse usage
+GRANT USAGE ON WAREHOUSE API_PROXY_WH TO ROLE API_PROXY_SERVICE_ROLE;
+
+-- Grant database and schema access
+GRANT USAGE ON DATABASE API_PROXY TO ROLE API_PROXY_SERVICE_ROLE;
+GRANT USAGE ON SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
+
+-- Grant table creation permissions
+GRANT CREATE TABLE ON SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
+
+-- Grant permissions on existing and future tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
+
+-- Grant permissions on views
+GRANT SELECT ON ALL VIEWS IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
+
+-- Assign role to user
+GRANT ROLE API_PROXY_SERVICE_ROLE TO USER API_PROXY_SERVICE_MANAGER;
+
+-- Set default role
+ALTER USER API_PROXY_SERVICE_MANAGER SET DEFAULT_ROLE = 'API_PROXY_SERVICE_ROLE';
 ```
 
-### 2. Permission Issues
+## PAT Token Authentication (Recommended)
 
-**Check role permissions:**
+PAT tokens provide a more secure authentication method for service accounts compared to passwords. The `API_PROXY_SERVICE_MANAGER` should use PAT tokens for authentication.
+
+### Prerequisites for PAT Tokens
+
+1. Service user must be created (the setup script handles this)
+2. Network policy must be assigned to the service user
+3. Service user must have the appropriate role granted
+
+### Step 1: Verify User Setup
+
+Verify the user exists and is configured correctly:
+
 ```sql
-SHOW GRANTS TO ROLE API_PROXY_SERVICE_ROLE;
+SHOW USERS LIKE 'API_PROXY_SERVICE_MANAGER';
 ```
 
-**Test specific permissions:**
+The output should show the user details.
+
+### Step 2: Verify Network Policy
+
+The network policy should already be created and assigned. Verify:
+
 ```sql
--- Test warehouse usage
-USE WAREHOUSE API_PROXY_WH;
-
--- Test database access
-USE DATABASE API_PROXY;
-
--- Test schema access
-USE SCHEMA PUBLIC;
+SHOW NETWORK POLICIES LIKE 'API_PROXY_SERVICE_NETWORK_POLICY';
+SHOW USERS LIKE 'API_PROXY_SERVICE_MANAGER';
+-- Check that NETWORK_POLICY column shows API_PROXY_SERVICE_NETWORK_POLICY
 ```
 
-### 3. Common Issues
+### Step 3: Generate PAT Token
 
-**Issue: User cannot connect**
-- Check if user is disabled
-- Verify password is correct
-- Check network policies
+Generate a PAT token for the service user:
 
-**Issue: Permission denied**
-- Verify role is assigned to user
-- Check if role has required permissions
-- Ensure user is using correct role
+```sql
+ALTER USER API_PROXY_SERVICE_MANAGER
+  ADD PROGRAMMATIC ACCESS TOKEN API_PROXY_SERVICE_TOKEN
+  DAYS_TO_EXPIRY = 365;
+```
 
-**Issue: Warehouse not found**
-- Check if warehouse exists
-- Verify role has USAGE permission on warehouse
-- Check if warehouse is suspended
+**IMPORTANT**: The command will return the `token_secret` value. **COPY THIS VALUE IMMEDIATELY** - it will not be displayed again!
+
+Example output:
+```
+Statement executed successfully.
+
++-----------------------------------------------------------------+
+| TOKEN_NAME                    | TOKEN_SECRET                   |
+|-------------------------------+--------------------------------|
+| API_PROXY_SERVICE_TOKEN       | snpat_xxxxxxxxxxxxxxxxxxxx... |
++-----------------------------------------------------------------+
+```
+
+### Step 4: Update Configuration File
+
+Update `config/snowflake.json` with the PAT token:
+
+```json
+{
+  "account": "your-account.snowflakecomputing.com",
+  "username": "API_PROXY_SERVICE_MANAGER",
+  "token": "snpat_xxxxxxxxxxxxxxxxxxxx...",
+  "warehouse": "API_PROXY_WH",
+  "database": "API_PROXY",
+  "schema": "APP",
+  "role": "API_PROXY_SERVICE_ROLE"
+}
+```
+
+**Important**: 
+- Remove the `password` field (if present)
+- Add the `token` field with the token_secret value from Step 3
+- Keep the token secure and never commit it to version control
+
+### Step 5: Test Connection
+
+Test the connection locally:
+
+```bash
+cd backend
+npm start
+```
+
+Check the logs to confirm PAT token authentication:
+
+```
+Creating Snowflake connection using PAT token (local environment)
+Snowflake connection established
+```
+
+### PAT Token Management
+
+#### View Existing Tokens
+
+To see all PAT tokens for the user:
+
+```sql
+SHOW PROGRAMMATIC ACCESS TOKENS FOR USER API_PROXY_SERVICE_MANAGER;
+```
+
+#### Rotate Token
+
+To create a new token (before the old one expires):
+
+1. Generate new token:
+```sql
+ALTER USER API_PROXY_SERVICE_MANAGER
+  ADD PROGRAMMATIC ACCESS TOKEN API_PROXY_SERVICE_TOKEN_V2
+  DAYS_TO_EXPIRY = 365;
+```
+
+2. Update `config/snowflake.json` with new token
+
+3. Revoke old token:
+```sql
+ALTER USER API_PROXY_SERVICE_MANAGER
+  REVOKE PROGRAMMATIC ACCESS TOKEN API_PROXY_SERVICE_TOKEN;
+```
+
+#### Check Token Expiration
+
+```sql
+SHOW PROGRAMMATIC ACCESS TOKENS FOR USER API_PROXY_SERVICE_MANAGER;
+-- Check EXPIRES_AT column
+```
+
+### Environment Variables (Alternative)
+
+Instead of using `snowflake.json`, you can set environment variables:
+
+```bash
+export SNOWFLAKE_ACCOUNT="your-account.snowflakecomputing.com"
+export SNOWFLAKE_USERNAME="API_PROXY_SERVICE_MANAGER"
+export SNOWFLAKE_TOKEN="snpat_xxxxxxxxxxxxxxxxxxxx..."
+export SNOWFLAKE_WAREHOUSE="API_PROXY_WH"
+export SNOWFLAKE_DATABASE="API_PROXY"
+export SNOWFLAKE_SCHEMA="APP"
+export SNOWFLAKE_ROLE="API_PROXY_SERVICE_ROLE"
+```
+
+### Authentication Priority
+
+The backend uses the following authentication priority:
+
+1. **SPCS (Production)**: OAuth token from `/snowflake/session/token` (automatically provided by Snowflake)
+2. **Local Development**: PAT token from `config/snowflake.json` or `SNOWFLAKE_TOKEN` environment variable
+3. **Fallback**: Username/password (not recommended, legacy support only)
+
+### PAT Token Security Best Practices
+
+1. **Never commit tokens to version control**: Ensure `config/snowflake.json` is in `.gitignore`
+2. **Use long expiration periods**: Set `DAYS_TO_EXPIRY` to 365 days for service accounts
+3. **Rotate tokens regularly**: Create new tokens before expiration
+4. **Use least privilege**: The service user should only have the minimum required permissions
+5. **Monitor token usage**: Regularly check token usage and expiration dates
+6. **Network policy**: In production, restrict the network policy to specific IP ranges instead of `0.0.0.0/0`
+
+### Troubleshooting PAT Tokens
+
+#### "Invalid credentials" error
+
+- Verify the token was copied correctly (no extra spaces or line breaks)
+- Check token hasn't expired: `SHOW PROGRAMMATIC ACCESS TOKENS FOR USER API_PROXY_SERVICE_MANAGER;`
+- Ensure network policy is assigned to the user
+
+#### "Network policy required" error
+
+- Ensure network policy is created and assigned:
+  ```sql
+  ALTER USER API_PROXY_SERVICE_MANAGER SET NETWORK_POLICY = API_PROXY_SERVICE_NETWORK_POLICY;
+  ```
+
+#### "User type must be SERVICE" error
+
+- The user should be created normally (not necessarily as SERVICE type for PAT tokens)
+- Verify user exists: `SHOW USERS LIKE 'API_PROXY_SERVICE_MANAGER';`
 
 ## Production Recommendations
 
 ### 1. Security Hardening
 
-- Use strong, unique passwords
+- Use PAT tokens instead of passwords
 - Enable MFA if possible
-- Implement IP whitelisting
-- Use key-pair authentication
-- Regular password rotation
+- Implement IP whitelisting via network policy
+- Use key-pair authentication for administrative access
+- Regular token rotation
 
 ### 2. Monitoring
 
@@ -303,21 +322,21 @@ USE SCHEMA PUBLIC;
 
 ## Cleanup
 
-### 1. Remove Service Account
+### Remove Service Account
 
 ```sql
 -- Run as ACCOUNTADMIN
-DROP USER API_PROXY_SERVICE_USER;
+DROP USER API_PROXY_SERVICE_MANAGER;
 DROP ROLE API_PROXY_SERVICE_ROLE;
 DROP DATABASE API_PROXY;
 DROP WAREHOUSE API_PROXY_WH;
 ```
 
-### 2. Verify Cleanup
+### Verify Cleanup
 
 ```sql
 -- Verify objects are removed
-SELECT NAME FROM SNOWFLAKE.ACCOUNT_USAGE.USERS WHERE NAME = 'API_PROXY_SERVICE_USER';
+SELECT NAME FROM SNOWFLAKE.ACCOUNT_USAGE.USERS WHERE NAME = 'API_PROXY_SERVICE_MANAGER';
 SELECT ROLE_NAME FROM SNOWFLAKE.ACCOUNT_USAGE.ROLES WHERE ROLE_NAME = 'API_PROXY_SERVICE_ROLE';
 ```
 
@@ -335,3 +354,5 @@ For issues with Snowflake setup:
 - [Snowflake User Management](https://docs.snowflake.com/en/user-guide/admin-user-management.html)
 - [Snowflake Role-Based Access Control](https://docs.snowflake.com/en/user-guide/security-access-control-overview.html)
 - [Snowflake Security Best Practices](https://docs.snowflake.com/en/user-guide/security-best-practices.html)
+- [Snowflake PAT Token Documentation](https://docs.snowflake.com/en/user-guide/programmatic-access-tokens)
+- [Snowflake SDK Authentication](https://docs.snowflake.com/en/developer-guide/node-js/nodejs-driver-use#connecting)

@@ -29,7 +29,7 @@ The deployment script (`scripts/deploy.sh`) uses SQL scripts as the **single sou
 - Schema (`APP` → customizable via deploy script)
 - Warehouse (`API_PROXY_WH` → customizable via deploy script)
 - Service Role (`API_PROXY_SERVICE_ROLE`)
-- Service User (`API_PROXY_SERVICE_USER`)
+- Service User (`API_PROXY_SERVICE_MANAGER`)
 - All permissions and grants
 - Audit/logging tables (optional)
 
@@ -100,7 +100,7 @@ All scripts and `deploy.sh` use consistent naming:
 | Warehouse | `API_PROXY_WH` | ✅ `--warehouse` flag |
 | Compute Pool | `API_PROXY_POOL` | ✅ `--compute-pool` flag |
 | Service Role | `API_PROXY_SERVICE_ROLE` | ❌ Fixed |
-| Service User | `API_PROXY_SERVICE_USER` | ❌ Fixed |
+| Service User | `API_PROXY_SERVICE_MANAGER` | ❌ Fixed |
 
 **Important**: Schema is `APP` (not `PUBLIC`) to align with deploy script defaults.
 
@@ -113,7 +113,7 @@ The deploy script automatically replaces hardcoded values in SQL scripts:
 | `API_PROXY` | `DATABASE` or `--database` | `API_PROXY` |
 | `API_PROXY_WH` | `WAREHOUSE` or `--warehouse` | `API_PROXY_WH` |
 | `API_PROXY.APP` | `${DATABASE}.${SCHEMA}` | `API_PROXY.APP` |
-| `API_PROXY_SERVICE_USER` | `SERVICE_USER_NAME` | `API_PROXY_SERVICE_USER` |
+| `API_PROXY_SERVICE_MANAGER` | `SERVICE_USER_NAME` | `API_PROXY_SERVICE_MANAGER` |
 | `API_PROXY_SERVICE_ROLE` | `SERVICE_ROLE_NAME` | `API_PROXY_SERVICE_ROLE` |
 | `'ChangeThisPassword123!'` | `SNOWFLAKE_SERVICE_USER_PASSWORD` | `ChangeThisPassword123!` |
 
@@ -201,7 +201,7 @@ The SQL scripts use `ACCOUNTADMIN` by default. For non-ACCOUNTADMIN modes:
    - Deploy script attempts to modify `USE ROLE` statements
    - If errors occur, use `--role-mode ACCOUNTADMIN`
 
-See [ROLE_MODE_GUIDE.md](./ROLE_MODE_GUIDE.md) for detailed role mode information.
+Note: The deployment script uses your default Snow CLI role. Ensure your default role has sufficient permissions.
 
 ## Verification
 
@@ -217,7 +217,7 @@ SHOW WAREHOUSES LIKE 'API_PROXY_WH';
 
 -- Verify role and user
 SHOW ROLES LIKE 'API_PROXY_SERVICE_ROLE';
-SHOW USERS LIKE 'API_PROXY_SERVICE_USER';
+SHOW USERS LIKE 'API_PROXY_SERVICE_MANAGER';
 
 -- Verify tables (after running create_tables.sql)
 SHOW TABLES IN SCHEMA API_PROXY.APP;
@@ -251,13 +251,13 @@ Or use deploy script with `--role-mode` option.
 
 ### Service Account Already Exists
 
-**Symptom**: `User 'API_PROXY_SERVICE_USER' already exists`
+**Symptom**: `User 'API_PROXY_SERVICE_MANAGER' already exists`
 
 **Cause**: Previous setup or deploy.sh already created it
 
 **Solution**: Scripts use `IF NOT EXISTS`, so it's safe to re-run. Or drop and recreate:
 ```sql
-DROP USER IF EXISTS API_PROXY_SERVICE_USER;
+DROP USER IF EXISTS API_PROXY_SERVICE_MANAGER;
 DROP ROLE IF EXISTS API_PROXY_SERVICE_ROLE;
 ```
 
@@ -309,6 +309,5 @@ If you were using deploy script with inline SQL:
 ## Additional Resources
 
 - [Deployment Guide](./DEPLOYMENT.md) - Complete deployment instructions
-- [Role Mode Guide](./ROLE_MODE_GUIDE.md) - Role-based deployment options
 - [Deployment Testing](./DEPLOYMENT_TESTING.md) - Testing deployment process
 

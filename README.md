@@ -36,7 +36,7 @@ A comprehensive API proxy service designed to run on Snowflake Container Service
 2. **Snowflake Setup**
    ```sql
    -- Run as ACCOUNTADMIN in Snowflake
-   \i sql/quick_setup.sql
+   \i sql/setup_service_account.sql
    
    -- Optional: Run performance monitoring
    \i sql/performance_monitoring.sql
@@ -144,11 +144,9 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[API Documentation](docs/API.md)** - Complete API reference
 - **[Security Guide](docs/SECURITY.md)** - Security best practices and configuration
 - **[SQL Scripts Guide](docs/SQL_SCRIPTS.md)** - Database setup and SQL script documentation
-- **[Role Mode Guide](docs/ROLE_MODE_GUIDE.md)** - Role-based deployment options
-- **[Snow CLI Setup](docs/SNOW_CLI_SETUP.md)** - Snow CLI installation and configuration
-- **[Snowflake Setup](docs/SNOWFLAKE_SETUP.md)** - Snowflake account setup
+- **[Snowflake Setup](docs/SNOWFLAKE_SETUP.md)** - Complete Snowflake account setup including PAT tokens
 - **[Deployment Testing](docs/DEPLOYMENT_TESTING.md)** - Testing the deployment process
-- **[Cleanup Guide](docs/CLEANUP_GUIDE.md)** - Removing deployed resources
+- **[Deployment Guide](docs/DEPLOYMENT.md)** - Complete deployment instructions including cleanup
 
 ## API Endpoints
 

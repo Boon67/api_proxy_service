@@ -77,7 +77,66 @@ snow connection add
 # - Role (ACCOUNTADMIN, SYSADMIN, or USERADMIN)
 ```
 
-For detailed Snow CLI setup, see [SNOW_CLI_SETUP.md](./SNOW_CLI_SETUP.md).
+### Detailed Snow CLI Setup
+
+#### Installation
+
+**macOS:**
+```bash
+brew install snowflake-labs/snowflake/snow-cli
+snow --version
+```
+
+**Linux:**
+```bash
+curl -O https://github.com/snowflakedb/snowflake-cli/releases/latest/download/snowflake_cli_linux_x86_64.tar.gz
+tar -xzf snowflake_cli_linux_x86_64.tar.gz
+sudo mv snow /usr/local/bin/
+sudo chmod +x /usr/local/bin/snow
+snow --version
+```
+
+**Windows:**
+1. Download from: https://github.com/snowflakedb/snowflake-cli/releases
+2. Extract ZIP and add `snow.exe` to PATH
+3. Verify: `snow --version`
+
+#### Configuration
+
+**Option 1: Interactive Setup**
+```bash
+snow connection setup
+# Follow prompts to configure connection
+```
+
+**Option 2: Configuration File** (`~/.snowflake/config.toml`):
+```toml
+[connections.default]
+account = "your-account.snowflakecomputing.com"
+user = "your-username"
+password = "your-password"
+warehouse = "API_PROXY_WH"
+database = "API_PROXY"
+schema = "APP"
+role = "ACCOUNTADMIN"
+```
+
+**Option 3: Environment Variables:**
+```bash
+export SNOWFLAKE_ACCOUNT="your-account.snowflakecomputing.com"
+export SNOWFLAKE_USERNAME="your-username"
+export SNOWFLAKE_PASSWORD="your-password"
+export SNOWFLAKE_WAREHOUSE="API_PROXY_WH"
+export SNOWFLAKE_DATABASE="API_PROXY"
+export SNOWFLAKE_SCHEMA="APP"
+export SNOWFLAKE_ROLE="ACCOUNTADMIN"
+```
+
+**Verify Installation:**
+```bash
+snow connection test
+snow connection show
+```
 
 ### 3. Quick Deploy
 
@@ -179,7 +238,7 @@ The `--role-mode` option allows deployment with least privilege:
 - **USERADMIN**: Can create users and roles (requires SYSADMIN for objects)
 - **AUTO**: Automatically uses SYSADMIN for objects and USERADMIN for users/roles
 
-See [ROLE_MODE_GUIDE.md](./ROLE_MODE_GUIDE.md) for detailed information.
+Note: The deployment script uses your default Snow CLI role. Ensure your default role has sufficient permissions.
 
 ### Manual Deployment Steps
 
@@ -298,7 +357,7 @@ Create a `.env` file in the project root:
 ```bash
 # Snowflake Configuration
 SNOWFLAKE_ACCOUNT=your-account.snowflakecomputing.com
-SNOWFLAKE_USERNAME=API_PROXY_SERVICE_USER
+SNOWFLAKE_USERNAME=API_PROXY_SERVICE_MANAGER
 SNOWFLAKE_PASSWORD=<secure-password>
 SNOWFLAKE_WAREHOUSE=API_PROXY_WH
 SNOWFLAKE_DATABASE=API_PROXY
@@ -327,7 +386,7 @@ The deployment script creates the following resources automatically:
 - **Warehouse**: `API_PROXY_WH` (customizable with `--warehouse`)
 - **Compute Pool**: `API_PROXY_POOL` (customizable with `--compute-pool`)
 - **Service Role**: `API_PROXY_SERVICE_ROLE`
-- **Service User**: `API_PROXY_SERVICE_USER`
+- **Service User**: `API_PROXY_SERVICE_MANAGER`
 
 For SQL script details, see [SQL_SCRIPTS.md](./SQL_SCRIPTS.md).
 
@@ -466,31 +525,135 @@ snow spcs compute-pool status API_PROXY_POOL
 
 ## Cleanup
 
-To remove all deployed resources:
+The cleanup script (`scripts/cleanup.sh`) removes all resources created by the deployment script, including services, compute pools, databases, warehouses, users, and roles.
 
+### Quick Start
+
+**Interactive Mode (Recommended):**
 ```bash
-# Interactive (asks for confirmation)
+# Asks for confirmation before deleting
 npm run cleanup
-
-# Non-interactive (auto-confirms)
-npm run cleanup:yes
-
-# With custom names
-./scripts/cleanup.sh \
-  --database API_PROXY \
-  --warehouse API_PROXY_WH \
-  --yes
+# or
+./scripts/cleanup.sh
 ```
 
-The cleanup script removes:
-- Container Service
-- Compute Pool
-- Database (cascades to schema and all objects)
-- Warehouse
-- Service User
-- Service Role
+**Non-Interactive Mode:**
+```bash
+# Auto-confirms (useful for automation/CI)
+npm run cleanup:yes
+# or
+./scripts/cleanup.sh --yes
+```
 
-See [CLEANUP_GUIDE.md](./CLEANUP_GUIDE.md) for detailed cleanup instructions.
+### What Gets Removed
+
+The cleanup script removes the following resources **in order**:
+
+1. **Service** (`SNOWFLAKE_API_PROXY`) - Drops the Snowflake Container Service
+2. **Compute Pool** (`API_PROXY_POOL`) - Drops the compute pool used by the service
+3. **Database** (`API_PROXY`) - Drops the database (cascades to all schemas, tables, views, etc.)
+4. **Warehouse** (`API_PROXY_WH`) - Drops the warehouse
+5. **User** (`API_PROXY_SERVICE_MANAGER`) - Drops the service user account
+6. **Role** (`API_PROXY_SERVICE_ROLE`) - Drops the service role
+
+### Command-Line Options
+
+```bash
+./scripts/cleanup.sh [OPTIONS]
+```
+
+**Options:**
+- `-d, --database NAME` - Database name to drop (default: `API_PROXY`)
+- `-s, --schema NAME` - Schema name (for reference) (default: `APP`)
+- `-w, --warehouse NAME` - Warehouse name to drop (default: `API_PROXY_WH`)
+- `-c, --compute-pool NAME` - Compute pool name to drop (default: `API_PROXY_POOL`)
+- `-n, --service NAME` - Service name to drop (default: `SNOWFLAKE_API_PROXY`)
+- `-y, --yes` - Auto-confirm (non-interactive)
+- `-h, --help` - Show help message
+
+**Note:** This script uses your default Snow CLI role. Ensure your default role has sufficient permissions to drop all resources.
+
+### Examples
+
+**Basic Cleanup:**
+```bash
+./scripts/cleanup.sh
+```
+
+**Custom Resource Names:**
+```bash
+./scripts/cleanup.sh --database MY_CUSTOM_DB --warehouse MY_CUSTOM_WH
+```
+
+**Force Cleanup (Non-Interactive):**
+```bash
+./scripts/cleanup.sh --yes
+```
+
+### Safety Features
+
+**Confirmation Prompt:**
+By default, the script asks for confirmation before proceeding:
+```
+⚠️  WARNING: This will permanently delete the following resources:
+   Service: SNOWFLAKE_API_PROXY
+   Compute Pool: API_PROXY_POOL
+   Database: API_PROXY
+   Schema: API_PROXY.APP
+   Warehouse: API_PROXY_WH
+   User: API_PROXY_SERVICE_MANAGER
+   Role: API_PROXY_SERVICE_ROLE
+   All tables and views in API_PROXY.APP
+
+Are you sure you want to continue? (yes/no):
+```
+
+**Resource Existence Checks:**
+The script checks if each resource exists before attempting to drop it:
+- Only attempts to drop resources that exist
+- Provides clear messages for non-existent resources
+- Continues even if some resources fail to drop (may have dependencies)
+
+### Manual Cleanup
+
+If the cleanup script fails or you need to clean up manually:
+
+```sql
+-- 1. Drop service (via Snow CLI or UI)
+-- snow spcs service drop SNOWFLAKE_API_PROXY
+
+-- 2. Drop compute pool
+DROP COMPUTE POOL IF EXISTS API_PROXY_POOL;
+
+-- 3. Drop database (cascades to schema and all objects)
+DROP DATABASE IF EXISTS API_PROXY CASCADE;
+
+-- 4. Drop warehouse
+DROP WAREHOUSE IF EXISTS API_PROXY_WH;
+
+-- 5. Drop user
+DROP USER IF EXISTS API_PROXY_SERVICE_MANAGER;
+
+-- 6. Drop role
+DROP ROLE IF EXISTS API_PROXY_SERVICE_ROLE;
+```
+
+### Troubleshooting Cleanup
+
+**Error: "Failed to authenticate with Snowflake"**
+- Run `snow connection test` first, or configure Snow CLI connection
+
+**Error: "Failed to drop service"**
+- Check service status with `snow spcs service list`
+
+**Error: "Failed to drop compute pool"**
+- Ensure service is dropped first, then drop compute pool
+
+**Error: "Failed to drop database"**
+- Check for active connections or dependent objects
+
+**Error: "Insufficient privileges"**
+- Ensure your default Snow CLI role has permissions to drop all resources
 
 ## Useful Snow CLI Commands
 
@@ -524,7 +687,4 @@ snow connection list
 - [API Documentation](./API.md)
 - [Security Guide](./SECURITY.md)
 - [SQL Scripts Guide](./SQL_SCRIPTS.md)
-- [Role Mode Guide](./ROLE_MODE_GUIDE.md)
-- [Snow CLI Setup](./SNOW_CLI_SETUP.md)
-- [Snowflake Setup](./SNOWFLAKE_SETUP.md)
-- [Deployment Testing](./DEPLOYMENT_TESTING.md)
+- [Snowflake Setup](./SNOWFLAKE_SETUP.md) - Complete Snowflake account setup including PAT tokens

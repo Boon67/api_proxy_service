@@ -251,7 +251,7 @@ test_resource_creation() {
     # Use perl for better word boundary handling, or sed with careful patterns
     sed -e "s/API_PROXY\.APP/${TEST_DATABASE}.${TEST_SCHEMA}/g" \
         -e "s/API_PROXY_WH/${TEST_WAREHOUSE}/g" \
-        -e "s/API_PROXY_SERVICE_USER/API_PROXY_SERVICE_USER_TEST/g" \
+        -e "s/API_PROXY_SERVICE_MANAGER/API_PROXY_SERVICE_MANAGER_TEST/g" \
         -e "s/API_PROXY_SERVICE_ROLE/API_PROXY_SERVICE_ROLE_TEST/g" \
         -e "s/\bAPI_PROXY\b/${TEST_DATABASE}/g" \
         "${SCRIPT_DIR}/../sql/setup_service_account.sql" > "$TEMP_SQL"
@@ -345,11 +345,11 @@ test_resource_creation() {
     fi
     
     # Check user
-    USER_SHOW=$(snow sql -q "USE ROLE USERADMIN; SHOW USERS LIKE 'API_PROXY_SERVICE_USER_TEST'" 2>/dev/null)
-    if echo "$USER_SHOW" | grep -qi "API_PROXY_SERVICE_USER_TEST" && ! echo "$USER_SHOW" | grep -qiE "0 rows|not found"; then
-        test_pass "User API_PROXY_SERVICE_USER_TEST was created"
+    USER_SHOW=$(snow sql -q "USE ROLE USERADMIN; SHOW USERS LIKE 'API_PROXY_SERVICE_MANAGER_TEST'" 2>/dev/null)
+    if echo "$USER_SHOW" | grep -qi "API_PROXY_SERVICE_MANAGER_TEST" && ! echo "$USER_SHOW" | grep -qiE "0 rows|not found"; then
+        test_pass "User API_PROXY_SERVICE_MANAGER_TEST was created"
     else
-        test_fail "User API_PROXY_SERVICE_USER_TEST was not created"
+        test_fail "User API_PROXY_SERVICE_MANAGER_TEST was not created"
     fi
     
     return 0
@@ -377,7 +377,7 @@ cleanup_resources() {
         log_info "  Database: ${TEST_DATABASE}"
         log_info "  Warehouse: ${TEST_WAREHOUSE}"
         log_info "  Role: API_PROXY_SERVICE_ROLE_TEST"
-        log_info "  User: API_PROXY_SERVICE_USER_TEST"
+        log_info "  User: API_PROXY_SERVICE_MANAGER_TEST"
         log_info "  Run cleanup manually: ./scripts/cleanup.sh --database ${TEST_DATABASE} --warehouse ${TEST_WAREHOUSE}"
         return 0
     fi
@@ -401,10 +401,10 @@ cleanup_resources() {
     fi
     
     # Drop user
-    if snow sql -q "USE ROLE USERADMIN; DROP USER IF EXISTS API_PROXY_SERVICE_USER_TEST" > /dev/null 2>&1; then
-        test_pass "User API_PROXY_SERVICE_USER_TEST dropped"
+    if snow sql -q "USE ROLE USERADMIN; DROP USER IF EXISTS API_PROXY_SERVICE_MANAGER_TEST" > /dev/null 2>&1; then
+        test_pass "User API_PROXY_SERVICE_MANAGER_TEST dropped"
     else
-        test_fail "Failed to drop user API_PROXY_SERVICE_USER_TEST"
+        test_fail "Failed to drop user API_PROXY_SERVICE_MANAGER_TEST"
     fi
     
     # Drop role

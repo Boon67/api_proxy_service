@@ -59,7 +59,7 @@ npm run cleanup:yes      # Auto-confirm
 - `--compute-pool`, `-c`: Compute pool name to remove
 - `--yes`, `-y`: Skip confirmation prompt
 
-See [Cleanup Guide](./CLEANUP_GUIDE.md) for detailed documentation.
+See the [Deployment Guide](./DEPLOYMENT.md#cleanup) for detailed cleanup documentation.
 
 #### `setup.sh` - Development Environment Setup
 **Purpose**: Sets up local development environment
@@ -276,8 +276,7 @@ chmod +x scripts/*.sh
 
 ## See Also
 
-- [Deployment Guide](./DEPLOYMENT.md)
-- [Cleanup Guide](./CLEANUP_GUIDE.md)
+- [Deployment Guide](./DEPLOYMENT.md#cleanup) - Includes cleanup instructions
 - [Deployment Testing](./DEPLOYMENT_TESTING.md)
 - [SQL Scripts Guide](./SQL_SCRIPTS.md)
 

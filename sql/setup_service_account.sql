@@ -17,7 +17,7 @@
 --   - Schema: APP (not PUBLIC)
 --   - Warehouse: API_PROXY_WH
 --   - Role: API_PROXY_SERVICE_ROLE
---   - User: API_PROXY_SERVICE_USER
+--   - User: API_PROXY_SERVICE_MANAGER
 --
 -- These names align with scripts/deploy.sh defaults.
 -- To customize, update both this script and deploy.sh flags.
@@ -35,9 +35,19 @@ USE ROLE ACCOUNTADMIN;
 CREATE DATABASE IF NOT EXISTS API_PROXY
   COMMENT = 'Database for Snowflake API Proxy Service';
 
+-- Grant ownership of database to SYSADMIN (standard practice)
+-- This ensures SYSADMIN can fully manage the database
+GRANT OWNERSHIP ON DATABASE API_PROXY TO ROLE SYSADMIN;
+
+-- Grant usage on database to USERADMIN (allows user management operations)
+GRANT USAGE ON DATABASE API_PROXY TO ROLE USERADMIN;
+
 -- Create schema
 CREATE SCHEMA IF NOT EXISTS API_PROXY.APP
   COMMENT = 'App schema for API Proxy Service';
+
+-- Grant ownership of schema to SYSADMIN
+GRANT OWNERSHIP ON SCHEMA API_PROXY.APP TO ROLE SYSADMIN;
 
 -- =====================================================
 -- 2. CREATE WAREHOUSE (if not exists)
@@ -51,6 +61,12 @@ CREATE WAREHOUSE IF NOT EXISTS API_PROXY_WH
   INITIALLY_SUSPENDED = TRUE
   COMMENT = 'Warehouse for Snowflake API Proxy Service';
 
+-- Grant ownership of warehouse to SYSADMIN (standard practice)
+GRANT OWNERSHIP ON WAREHOUSE API_PROXY_WH TO ROLE SYSADMIN;
+
+-- Grant usage on warehouse to USERADMIN (allows user management operations)
+GRANT USAGE ON WAREHOUSE API_PROXY_WH TO ROLE USERADMIN;
+
 -- =====================================================
 -- 3. CREATE SERVICE ROLE
 -- =====================================================
@@ -63,11 +79,11 @@ CREATE ROLE IF NOT EXISTS API_PROXY_SERVICE_ROLE
 -- 4. CREATE SERVICE USER
 -- =====================================================
 
--- Create dedicated service user (database and schema now exist for DEFAULT_NAMESPACE)
-CREATE USER IF NOT EXISTS API_PROXY_SERVICE_USER
+-- Create dedicated service manager (database and schema now exist for DEFAULT_NAMESPACE)
+CREATE USER IF NOT EXISTS API_PROXY_SERVICE_MANAGER
   PASSWORD = 'ChangeThisPassword123!'
-  LOGIN_NAME = 'API_PROXY_SERVICE_USER'
-  DISPLAY_NAME = 'API Proxy Service User'
+  LOGIN_NAME = 'API_PROXY_SERVICE_MANAGER'
+  DISPLAY_NAME = 'API Proxy Service Manager'
   FIRST_NAME = 'API'
   LAST_NAME = 'Proxy'
   EMAIL = 'api-proxy-service@yourcompany.com'
@@ -107,24 +123,13 @@ GRANT CREATE FUNCTION ON SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
 -- 6. GRANT PERMISSIONS FOR DATA ACCESS
 -- =====================================================
 
--- Grant select on all existing tables in the schema
--- Note: This grants access to all current tables. For production,
--- you may want to grant access to specific tables only.
-GRANT SELECT ON ALL TABLES IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
+-- Grant SELECT, INSERT, UPDATE, DELETE on all existing tables in the schema
+-- This grants full CRUD access to all current tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
 
--- Grant select on all future tables in the schema
-GRANT SELECT ON FUTURE TABLES IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
-
--- Grant UPDATE on USERS table (needed for LAST_LOGIN updates)
-GRANT UPDATE ON TABLE API_PROXY.APP.USERS TO ROLE API_PROXY_SERVICE_ROLE;
-
--- Grant INSERT, UPDATE, DELETE on ENDPOINTS table (needed for CRUD operations)
-GRANT INSERT, UPDATE, DELETE ON TABLE API_PROXY.APP.ENDPOINTS TO ROLE API_PROXY_SERVICE_ROLE;
-
--- Grant INSERT, UPDATE, DELETE on API_KEYS table (needed for CRUD operations)
--- Note: This grant will fail if API_KEYS doesn't exist yet (it's created in create_tables.sql)
--- This is safe to ignore - the grant will be applied when create_tables.sql is run
--- GRANT INSERT, UPDATE, DELETE ON TABLE API_PROXY.APP.API_KEYS TO ROLE API_PROXY_SERVICE_ROLE;
+-- Grant SELECT, INSERT, UPDATE, DELETE on all future tables in the schema
+-- This ensures new tables automatically get full permissions
+GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
 
 -- Grant select on all existing views in the schema
 GRANT SELECT ON ALL VIEWS IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVICE_ROLE;
@@ -148,14 +153,14 @@ GRANT USAGE ON FUTURE FUNCTIONS IN SCHEMA API_PROXY.APP TO ROLE API_PROXY_SERVIC
 -- 7. ASSIGN ROLE TO USER AND SYSADMIN
 -- =====================================================
 
--- Assign the service role to the service user
-GRANT ROLE API_PROXY_SERVICE_ROLE TO USER API_PROXY_SERVICE_USER;
+-- Assign the service role to the service manager
+GRANT ROLE API_PROXY_SERVICE_ROLE TO USER API_PROXY_SERVICE_MANAGER;
 
 -- Grant the service role to SYSADMIN for management purposes
 GRANT ROLE API_PROXY_SERVICE_ROLE TO ROLE SYSADMIN;
 
 -- Set the role as default for the user
-ALTER USER API_PROXY_SERVICE_USER SET DEFAULT_ROLE = 'API_PROXY_SERVICE_ROLE';
+ALTER USER API_PROXY_SERVICE_MANAGER SET DEFAULT_ROLE = 'API_PROXY_SERVICE_ROLE';
 
 -- =====================================================
 -- 8. CREATE NETWORK POLICY AND PAT TOKEN SETUP
@@ -166,18 +171,18 @@ ALTER USER API_PROXY_SERVICE_USER SET DEFAULT_ROLE = 'API_PROXY_SERVICE_ROLE';
 -- Create network policy if it doesn't exist (allows all IPs - adjust for production)
 CREATE NETWORK POLICY IF NOT EXISTS API_PROXY_SERVICE_NETWORK_POLICY
   ALLOWED_IP_LIST = ('0.0.0.0/0')
-  COMMENT = 'Network policy for API Proxy Service User PAT token authentication';
+  COMMENT = 'Network policy for API Proxy Service Manager PAT token authentication';
 
--- Assign network policy to the service user (required for PAT tokens)
-ALTER USER API_PROXY_SERVICE_USER SET NETWORK_POLICY = API_PROXY_SERVICE_NETWORK_POLICY;
+-- Assign network policy to the service manager (required for PAT tokens)
+ALTER USER API_PROXY_SERVICE_MANAGER SET NETWORK_POLICY = API_PROXY_SERVICE_NETWORK_POLICY;
 
 -- =====================================================
 -- PAT TOKEN GENERATION INSTRUCTIONS
 -- =====================================================
--- After running this script, generate a PAT token for the service user:
+-- After running this script, generate a PAT token for the service manager:
 --
 -- 1. Generate PAT token (replace TOKEN_NAME with your desired name):
---    ALTER USER API_PROXY_SERVICE_USER
+--    ALTER USER API_PROXY_SERVICE_MANAGER
 --      ADD PROGRAMMATIC ACCESS TOKEN TOKEN_NAME
 --      DAYS_TO_EXPIRY = 365;
 --
@@ -187,7 +192,7 @@ ALTER USER API_PROXY_SERVICE_USER SET NETWORK_POLICY = API_PROXY_SERVICE_NETWORK
 -- 3. Update config/snowflake.json with the token:
 --    {
 --      "account": "your-account.snowflakecomputing.com",
---      "username": "API_PROXY_SERVICE_USER",
+--      "username": "API_PROXY_SERVICE_MANAGER",
 --      "token": "<token_secret_from_step_1>",
 --      "warehouse": "API_PROXY_WH",
 --      "database": "API_PROXY",
@@ -335,6 +340,7 @@ $$;
 -- =====================================================
 
 -- Grant permissions on audit tables to the service role
+-- Note: DELETE is not granted on audit/log tables to preserve audit trail
 GRANT SELECT, INSERT, UPDATE ON TABLE API_AUDIT_LOG TO ROLE API_PROXY_SERVICE_ROLE;
 GRANT SELECT, INSERT, UPDATE ON TABLE API_USAGE_LOG TO ROLE API_PROXY_SERVICE_ROLE;
 
@@ -359,7 +365,7 @@ SELECT
     DEFAULT_ROLE,
     DISABLED
 FROM SNOWFLAKE.ACCOUNT_USAGE.USERS 
-WHERE NAME = 'API_PROXY_SERVICE_USER'
+WHERE NAME = 'API_PROXY_SERVICE_MANAGER'
 
 UNION ALL
 
@@ -377,7 +383,7 @@ WHERE ROLE_NAME = 'API_PROXY_SERVICE_ROLE';
 SHOW GRANTS TO ROLE API_PROXY_SERVICE_ROLE;
 
 -- Verify user role assignment
-SHOW GRANTS TO USER API_PROXY_SERVICE_USER;
+SHOW GRANTS TO USER API_PROXY_SERVICE_MANAGER;
 
 -- =====================================================
 -- 14. CLEANUP INSTRUCTIONS (for reference)
@@ -387,7 +393,7 @@ SHOW GRANTS TO USER API_PROXY_SERVICE_USER;
 -- To remove the service account and role (run as ACCOUNTADMIN):
 
 -- 1. Drop the user
-DROP USER API_PROXY_SERVICE_USER;
+DROP USER API_PROXY_SERVICE_MANAGER;
 
 -- 2. Drop the role
 DROP ROLE API_PROXY_SERVICE_ROLE;
@@ -409,7 +415,7 @@ SELECT 'Snowflake API Proxy Service account setup completed successfully!' AS ST
 -- Display connection information
 SELECT 
     'Connection Information:' AS INFO,
-    'Username: API_PROXY_SERVICE_USER' AS USERNAME,
+    'Manager: API_PROXY_SERVICE_MANAGER' AS USERNAME,
     'Role: API_PROXY_SERVICE_ROLE' AS ROLE,
     'Database: API_PROXY' AS DATABASE,
     'Schema: PUBLIC' AS SCHEMA,

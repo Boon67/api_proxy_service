@@ -101,7 +101,7 @@ router.post('/login', async (req, res) => {
     });
   } catch (error) {
     const duration = Date.now() - startTime;
-    logger.error(`[${requestId}] Login error`, {
+    const errorDetails = {
       error: error.message,
       stack: error.stack,
       duration: `${duration}ms`,
@@ -109,20 +109,37 @@ router.post('/login', async (req, res) => {
       errorCode: error.code,
       sqlState: error.sqlState,
       sqlCode: error.sqlCode
-    });
-    // Log to console for debugging
-    console.error(`[${requestId}] Login error details:`, {
-      message: error.message,
-      name: error.name,
-      code: error.code,
-      sqlState: error.sqlState,
-      sqlCode: error.sqlCode,
-      stack: error.stack
-    });
+    };
+    
+    logger.error(`[${requestId}] Login error`, errorDetails);
+    
+    // Always log to console for debugging (even in production)
+    console.error(`[${requestId}] Login error details:`, errorDetails);
+    
+    // Determine if this is a database-related error
+    const isDatabaseError = error.code && (
+      error.code.startsWith('0800') || // Connection errors
+      error.code.startsWith('0900') || // SQL execution errors
+      error.sqlState ||
+      error.message.toLowerCase().includes('table') ||
+      error.message.toLowerCase().includes('database') ||
+      error.message.toLowerCase().includes('connection')
+    );
+    
     res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: error.message || 'An unexpected error occurred during login',
+      // Include helpful error details for debugging
+      details: {
+        errorType: isDatabaseError ? 'Database error' : 'Application error',
+        ...(process.env.NODE_ENV !== 'production' && {
+          name: error.name,
+          code: error.code,
+          sqlState: error.sqlState,
+          sqlCode: error.sqlCode
+        })
+      }
     });
   }
 });

@@ -20,10 +20,6 @@ DEFAULT_COMPUTE_POOL="API_PROXY_POOL"
 DEFAULT_DATABASE="API_PROXY"
 DEFAULT_SCHEMA="APP"
 DEFAULT_WAREHOUSE="API_PROXY_WH"
-# Role configuration: Use SYSADMIN/USERADMIN instead of ACCOUNTADMIN for least privilege
-# Set to "ACCOUNTADMIN", "SYSADMIN", "USERADMIN", or "AUTO" (auto-detect based on operation)
-DEFAULT_ROLE_MODE=${SNOWFLAKE_ROLE_MODE:-"AUTO"}
-
 # Initialize variables with defaults (will be overridden by flags or env vars)
 VERSION="$DEFAULT_VERSION"
 COMPUTE_POOL="$DEFAULT_COMPUTE_POOL"
@@ -31,7 +27,6 @@ DATABASE="$DEFAULT_DATABASE"
 SCHEMA="$DEFAULT_SCHEMA"
 WAREHOUSE="$DEFAULT_WAREHOUSE"
 RECREATE_COMPUTE_POOL=false
-ROLE_MODE="$DEFAULT_ROLE_MODE"
 
 # Parse command-line arguments
 parse_args() {
@@ -57,10 +52,6 @@ parse_args() {
                 ;;
             --warehouse|-w)
                 WAREHOUSE="$2"
-                shift 2
-                ;;
-            --role-mode|-r)
-                ROLE_MODE="$2"
                 shift 2
                 ;;
             --recreate-compute-pool)
@@ -101,8 +92,6 @@ Options:
   -d, --database NAME         Database name (default: ${DEFAULT_DATABASE})
   -s, --schema NAME           Schema name (default: ${DEFAULT_SCHEMA})
   -w, --warehouse NAME        Warehouse name (default: ${DEFAULT_WAREHOUSE})
-  -r, --role-mode MODE        Role mode: ACCOUNTADMIN, SYSADMIN, USERADMIN, or AUTO (default: AUTO)
-                              AUTO uses SYSADMIN for objects and USERADMIN for users/roles
       --recreate-compute-pool Drop and recreate compute pool if it exists
       --check-endpoint        Check if endpoint URL exists and exit (debug mode)
       --debug-endpoint        Enable debug output for endpoint detection
@@ -110,6 +99,7 @@ Options:
   
   Note: These defaults align with sql/setup_service_account.sql and sql/create_tables.sql.
         If you customize names here, update the SQL scripts accordingly.
+        This script uses your default Snow CLI role. Ensure your default role has sufficient permissions.
 
 Environment Variables (override flags):
   SNOWFLAKE_COMPUTE_POOL      Compute pool name
@@ -244,11 +234,9 @@ check_and_prompt_env_vars() {
     prompt_for_var "SNOWFLAKE_WAREHOUSE" "Warehouse Name" false
     prompt_for_var "SNOWFLAKE_DATABASE" "Database Name" false
     prompt_for_var "SNOWFLAKE_SCHEMA" "Schema Name (default: ${DEFAULT_SCHEMA})" false
-    prompt_for_var "SNOWFLAKE_ROLE" "Role Name (default: ACCOUNTADMIN)" false
     
     # Set defaults if not provided
     SCHEMA=${SNOWFLAKE_SCHEMA:-${SCHEMA:-$DEFAULT_SCHEMA}}
-    SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE:-"ACCOUNTADMIN"}
     WAREHOUSE=${SNOWFLAKE_WAREHOUSE:-${WAREHOUSE}}
     DATABASE=${SNOWFLAKE_DATABASE:-${DATABASE}}
     
@@ -259,7 +247,6 @@ check_and_prompt_env_vars() {
     export SNOWFLAKE_WAREHOUSE
     export SNOWFLAKE_DATABASE
     export SNOWFLAKE_SCHEMA
-    export SNOWFLAKE_ROLE
 }
 
 # Check for application-specific environment variables
@@ -306,7 +293,7 @@ authenticate_snowflake() {
     WAREHOUSE=${SNOWFLAKE_WAREHOUSE:-${WAREHOUSE}}
     DATABASE=${SNOWFLAKE_DATABASE:-${DATABASE}}
     SCHEMA=${SNOWFLAKE_SCHEMA:-${SCHEMA:-$DEFAULT_SCHEMA}}
-    SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE:-"ACCOUNTADMIN"}
+    # Role is determined by Snow CLI configuration
     
     # Extract credentials from Snow CLI if available
     if [ -z "$SNOWFLAKE_PASSWORD" ]; then
@@ -344,7 +331,7 @@ password = "${SNOWFLAKE_PASSWORD}"
 warehouse = "${WAREHOUSE}"
 database = "${DATABASE}"
 schema = "${SCHEMA}"
-role = "${SNOWFLAKE_ROLE}"
+# role is determined by Snow CLI configuration
 EOF
     
     # Test connection
@@ -360,45 +347,8 @@ EOF
 
 # Create required Snowflake resources if they don't exist
 # Assumes connection test already passed, so user has appropriate privileges
-# Uses global variables set by parse_args() and environment variables
-# Determine which role to use for a given operation
-# SYSADMIN: databases, warehouses, schemas, object permissions
-# USERADMIN: users, roles, role assignments
-# ACCOUNTADMIN: required for some cross-account operations
-get_role_for_operation() {
-    local operation=$1  # "OBJECT", "USER_ROLE", or "GRANT"
-    
-    case "$ROLE_MODE" in
-        ACCOUNTADMIN)
-            echo "ACCOUNTADMIN"
-            ;;
-        SYSADMIN)
-            if [ "$operation" = "USER_ROLE" ]; then
-                echo "USERADMIN"  # Force USERADMIN for user/role operations
-            else
-                echo "SYSADMIN"
-            fi
-            ;;
-        USERADMIN)
-            if [ "$operation" = "OBJECT" ]; then
-                echo "SYSADMIN"  # Force SYSADMIN for object operations
-            else
-                echo "USERADMIN"
-            fi
-            ;;
-        AUTO|*)
-            # Auto-detect: SYSADMIN for objects, USERADMIN for users/roles
-            # For GRANT operations, use SYSADMIN (can grant on objects it owns)
-            if [ "$operation" = "USER_ROLE" ]; then
-                echo "USERADMIN"
-            elif [ "$operation" = "GRANT" ]; then
-                echo "SYSADMIN"  # SYSADMIN can grant on objects it owns
-            else
-                echo "SYSADMIN"
-            fi
-            ;;
-    esac
-}
+# This script uses the default role from Snow CLI configuration
+# No explicit role switching is performed - ensure your default role has sufficient permissions
 
 # Execute SQL script with variable substitution
 # Replaces hardcoded values in SQL scripts with deploy script variables
@@ -415,12 +365,7 @@ execute_sql_script() {
     # Default service account password - can be overridden with environment variable
     SERVICE_USER_PASSWORD=${SNOWFLAKE_SERVICE_USER_PASSWORD:-"ChangeThisPassword123!"}
     SERVICE_ROLE_NAME="API_PROXY_SERVICE_ROLE"
-    SERVICE_USER_NAME="API_PROXY_SERVICE_USER"
-    
-    # Determine roles to use
-    OBJECT_ROLE=$(get_role_for_operation "OBJECT")
-    USER_ROLE=$(get_role_for_operation "USER_ROLE")
-    GRANT_ROLE=$(get_role_for_operation "GRANT")
+    SERVICE_USER_NAME="API_PROXY_SERVICE_MANAGER"
     
     # Replace placeholders in SQL script using sed
     # Note: We use word boundaries (\b) to avoid partial matches
@@ -429,7 +374,7 @@ execute_sql_script() {
     # First pass: replace standalone API_PROXY (but not in API_PROXY.APP)
     # We'll handle the schema reference separately
     sed -e "s/\bAPI_PROXY_WH\b/${WAREHOUSE}/g" \
-        -e "s/\bAPI_PROXY_SERVICE_USER\b/${SERVICE_USER_NAME}/g" \
+        -e "s/\bAPI_PROXY_SERVICE_MANAGER\b/${SERVICE_USER_NAME}/g" \
         -e "s/\bAPI_PROXY_SERVICE_ROLE\b/${SERVICE_ROLE_NAME}/g" \
         -e "s/'ChangeThisPassword123!'/'${SERVICE_USER_PASSWORD}'/g" \
         "$sql_file" > "$temp_sql"
@@ -443,23 +388,7 @@ execute_sql_script() {
     # Clean up backup file
     rm -f "$temp_sql.bak"
     
-    # Handle role mode: For now, we'll execute with the initial role from the script
-    # The SQL script uses ACCOUNTADMIN by default, which works for all operations
-    # If a different role mode is set, we'll modify the initial USE ROLE statement
-    if [ "$ROLE_MODE" = "ACCOUNTADMIN" ]; then
-        # Keep ACCOUNTADMIN as-is (script default)
-        :
-    else
-        # For non-ACCOUNTADMIN modes, we need a more sophisticated approach
-        # Since SQL scripts mix object and user operations, we'll execute with ACCOUNTADMIN
-        # unless explicitly told to use a different role
-        # For AUTO/SYSADMIN/USERADMIN modes, the user should ensure their connection has appropriate privileges
-        # We'll just replace the initial role and let the script run
-        sed -i.bak "1s/USE ROLE ACCOUNTADMIN/USE ROLE ${OBJECT_ROLE}/" "$temp_sql" 2>/dev/null || true
-        rm -f "$temp_sql.bak"
-    fi
-    
-    # Execute the modified SQL script
+    # Execute the modified SQL script using default role from Snow CLI
     echo -e "${BLUE}Executing SQL script: $(basename ${sql_file})...${NC}"
     EXEC_OUTPUT=$(snow sql -f "$temp_sql" 2>&1)
     EXEC_EXIT=$?
@@ -539,21 +468,18 @@ create_snowflake_resources() {
     # Defaults -> Flags -> Environment Variables
     
     # Determine roles to use
-    OBJECT_ROLE=$(get_role_for_operation "OBJECT")
-    USER_ROLE=$(get_role_for_operation "USER_ROLE")
-    GRANT_ROLE=$(get_role_for_operation "GRANT")
-    
     echo -e "${BLUE}Using SQL script: sql/setup_service_account.sql (single source of truth)${NC}"
     
-    if [ "$ROLE_MODE" != "ACCOUNTADMIN" ]; then
-        echo -e "${YELLOW}⚠️  Note: Using ${ROLE_MODE} mode. The SQL script uses ACCOUNTADMIN by default.${NC}"
-        echo -e "${BLUE}   If you encounter permission errors, try: --role-mode ACCOUNTADMIN${NC}"
-    fi
+    # Display current role to inform user
+    CURRENT_ROLE=$(snow sql -q "SELECT CURRENT_ROLE()" 2>/dev/null | grep -v "current_role()" | grep -v "^-" | head -1 | xargs || echo "unknown")
+    echo -e "${BLUE}Using default role: ${CURRENT_ROLE}${NC}"
+    echo -e "${BLUE}Ensure this role has permissions to create databases, warehouses, users, roles, and grant permissions.${NC}"
+    echo ""
     
     # Default service account password - can be overridden with environment variable
     SERVICE_USER_PASSWORD=${SNOWFLAKE_SERVICE_USER_PASSWORD:-"ChangeThisPassword123!"}
     SERVICE_ROLE_NAME="API_PROXY_SERVICE_ROLE"
-    SERVICE_USER_NAME="API_PROXY_SERVICE_USER"
+    SERVICE_USER_NAME="API_PROXY_SERVICE_MANAGER"
     
     # Get script directory
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -574,7 +500,7 @@ create_snowflake_resources() {
     # - API_PROXY -> ${DATABASE}
     # - API_PROXY_WH -> ${WAREHOUSE}
     # - API_PROXY.APP -> ${DATABASE}.${SCHEMA}
-    # - API_PROXY_SERVICE_USER -> ${SERVICE_USER_NAME}
+    # - API_PROXY_SERVICE_MANAGER -> ${SERVICE_USER_NAME}
     # - API_PROXY_SERVICE_ROLE -> ${SERVICE_ROLE_NAME}
     # - 'ChangeThisPassword123!' -> ${SERVICE_USER_PASSWORD}
     if execute_sql_script "$SETUP_SQL"; then
@@ -593,23 +519,17 @@ create_snowflake_resources() {
     
     # Verify and ensure role is granted to user
     echo -e "${BLUE}Verifying role assignment to user...${NC}"
-    ROLE_GRANTED=$(snow sql -q "USE ROLE ${USER_ROLE}; SHOW GRANTS TO USER ${SERVICE_USER_NAME}" 2>/dev/null | grep -i "${SERVICE_ROLE_NAME}" || echo "")
+    ROLE_GRANTED=$(snow sql -q "SHOW GRANTS TO USER ${SERVICE_USER_NAME}" 2>/dev/null | grep -i "${SERVICE_ROLE_NAME}" || echo "")
     if [ -z "$ROLE_GRANTED" ]; then
         echo -e "${YELLOW}⚠️  Role ${SERVICE_ROLE_NAME} not found assigned to user ${SERVICE_USER_NAME}${NC}"
         echo -e "${BLUE}   Attempting to grant role to user...${NC}"
-        if snow sql -q "USE ROLE ${USER_ROLE}; GRANT ROLE ${SERVICE_ROLE_NAME} TO USER ${SERVICE_USER_NAME}" 2>&1; then
+        if snow sql -q "GRANT ROLE ${SERVICE_ROLE_NAME} TO USER ${SERVICE_USER_NAME}" 2>&1; then
             echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} granted to user ${SERVICE_USER_NAME}${NC}"
             # Also set as default role
-            snow sql -q "USE ROLE ${USER_ROLE}; ALTER USER ${SERVICE_USER_NAME} SET DEFAULT_ROLE = '${SERVICE_ROLE_NAME}'" 2>&1 || true
+            snow sql -q "ALTER USER ${SERVICE_USER_NAME} SET DEFAULT_ROLE = '${SERVICE_ROLE_NAME}'" 2>&1 || true
         else
-            echo -e "${YELLOW}⚠️  Failed to grant role. Trying with ACCOUNTADMIN...${NC}"
-            if snow sql -q "USE ROLE ACCOUNTADMIN; GRANT ROLE ${SERVICE_ROLE_NAME} TO USER ${SERVICE_USER_NAME}" 2>&1; then
-                echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} granted to user ${SERVICE_USER_NAME} (via ACCOUNTADMIN)${NC}"
-                snow sql -q "USE ROLE ACCOUNTADMIN; ALTER USER ${SERVICE_USER_NAME} SET DEFAULT_ROLE = '${SERVICE_ROLE_NAME}'" 2>&1 || true
-            else
-                echo -e "${RED}❌ Failed to grant role to user. Manual intervention may be required.${NC}"
-                echo -e "${BLUE}   Run: USE ROLE ACCOUNTADMIN; GRANT ROLE ${SERVICE_ROLE_NAME} TO USER ${SERVICE_USER_NAME};${NC}"
-            fi
+            echo -e "${RED}❌ Failed to grant role to user. Manual intervention may be required.${NC}"
+            echo -e "${YELLOW}⚠️  Ensure your default role has permissions to grant roles to users.${NC}"
         fi
     else
         echo -e "${GREEN}✅ Role ${SERVICE_ROLE_NAME} is already assigned to user ${SERVICE_USER_NAME}${NC}"
@@ -632,20 +552,82 @@ create_snowflake_resources() {
         exit 1
     fi
     
-    # Verify and ensure permissions are granted on API_KEYS table (after tables are created)
-    echo -e "${BLUE}Verifying permissions on API_KEYS table...${NC}"
-    API_KEYS_PERMS=$(snow sql -q "USE ROLE ACCOUNTADMIN; SHOW GRANTS ON TABLE ${DATABASE}.${SCHEMA}.API_KEYS TO ROLE ${SERVICE_ROLE_NAME}" 2>/dev/null | grep -i "INSERT" || echo "")
-    if [ -z "$API_KEYS_PERMS" ]; then
-        echo -e "${YELLOW}⚠️  INSERT permission not found on API_KEYS table for role ${SERVICE_ROLE_NAME}${NC}"
-        echo -e "${BLUE}   Granting INSERT, UPDATE, DELETE permissions on API_KEYS table...${NC}"
-        if snow sql -q "USE ROLE ACCOUNTADMIN; GRANT INSERT, UPDATE, DELETE ON TABLE ${DATABASE}.${SCHEMA}.API_KEYS TO ROLE ${SERVICE_ROLE_NAME}" 2>&1; then
-            echo -e "${GREEN}✅ Permissions granted on API_KEYS table${NC}"
-        else
-            echo -e "${RED}❌ Failed to grant permissions on API_KEYS table. Manual intervention may be required.${NC}"
-            echo -e "${BLUE}   Run: USE ROLE ACCOUNTADMIN; GRANT INSERT, UPDATE, DELETE ON TABLE ${DATABASE}.${SCHEMA}.API_KEYS TO ROLE ${SERVICE_ROLE_NAME};${NC}"
+    # Grant permissions on all application tables to the service role
+    echo -e "${BLUE}Granting permissions on all tables to ${SERVICE_ROLE_NAME}...${NC}"
+    
+    # Define all tables and their required permissions
+    # Note: Audit/log tables don't get DELETE to preserve audit trail
+    # Using array instead of associative array for better shell compatibility
+    GRANT_FAILED=false
+    
+    # Grant permissions on each table
+    grant_table_permissions() {
+        local TABLE_NAME=$1
+        local PERMISSIONS=$2
+        
+        echo -e "${BLUE}   Granting ${PERMISSIONS} on ${TABLE_NAME}...${NC}"
+        
+        # Check if table exists before granting permissions
+        TABLE_EXISTS=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW TABLES LIKE '${TABLE_NAME}'" 2>/dev/null | grep -i "${TABLE_NAME}" || echo "")
+        
+        if [ -z "$TABLE_EXISTS" ]; then
+            echo -e "${YELLOW}   ⚠️  Table ${TABLE_NAME} does not exist, skipping permissions${NC}"
+            return
         fi
+        
+        # Grant permissions on the table
+        if snow sql -q "GRANT ${PERMISSIONS} ON TABLE ${DATABASE}.${SCHEMA}.${TABLE_NAME} TO ROLE ${SERVICE_ROLE_NAME}" 2>&1; then
+            echo -e "${GREEN}   ✅ Permissions granted on ${TABLE_NAME}${NC}"
+        else
+            echo -e "${RED}   ❌ Failed to grant permissions on ${TABLE_NAME}${NC}"
+            GRANT_FAILED=true
+        fi
+    }
+    
+    # Grant permissions on all tables
+    grant_table_permissions "USERS" "SELECT,INSERT,UPDATE,DELETE"
+    grant_table_permissions "ENDPOINTS" "SELECT,INSERT,UPDATE,DELETE"
+    grant_table_permissions "API_KEYS" "SELECT,INSERT,UPDATE,DELETE"
+    grant_table_permissions "TAGS" "SELECT,INSERT,UPDATE,DELETE"
+    grant_table_permissions "ENDPOINT_TAGS" "SELECT,INSERT,UPDATE,DELETE"
+    grant_table_permissions "API_AUDIT_LOG" "SELECT,INSERT,UPDATE"
+    grant_table_permissions "API_USAGE_LOG" "SELECT,INSERT,UPDATE"
+    grant_table_permissions "SYSTEM_SETTINGS" "SELECT,INSERT,UPDATE,DELETE"
+    
+    # Grant permissions on views
+    echo -e "${BLUE}Granting permissions on views to ${SERVICE_ROLE_NAME}...${NC}"
+    
+    grant_view_permissions() {
+        local VIEW_NAME=$1
+        
+        # Check if view exists
+        VIEW_EXISTS=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW VIEWS LIKE '${VIEW_NAME}'" 2>/dev/null | grep -i "${VIEW_NAME}" || echo "")
+        
+        if [ -z "$VIEW_EXISTS" ]; then
+            echo -e "${YELLOW}   ⚠️  View ${VIEW_NAME} does not exist, skipping permissions${NC}"
+            return
+        fi
+        
+        if snow sql -q "GRANT SELECT ON VIEW ${DATABASE}.${SCHEMA}.${VIEW_NAME} TO ROLE ${SERVICE_ROLE_NAME}" 2>&1; then
+            echo -e "${GREEN}   ✅ SELECT permission granted on view ${VIEW_NAME}${NC}"
+        else
+            echo -e "${YELLOW}   ⚠️  Failed to grant SELECT permission on view ${VIEW_NAME}${NC}"
+        fi
+    }
+    
+    # Grant permissions on all views (check each one individually)
+    grant_view_permissions "ENDPOINTS_WITH_TOKENS"
+    grant_view_permissions "ENDPOINT_STATISTICS"
+    grant_view_permissions "API_USAGE_STATS"
+    grant_view_permissions "TOKEN_USAGE_STATS"
+    grant_view_permissions "ENDPOINT_USAGE_SUMMARY"
+    
+    if [ "$GRANT_FAILED" = true ]; then
+        echo -e "${YELLOW}⚠️  Some permissions failed to be granted. Check errors above.${NC}"
+        echo -e "${BLUE}   You may need to grant permissions manually using:${NC}"
+        echo -e "${BLUE}   GRANT <PERMISSIONS> ON TABLE ${DATABASE}.${SCHEMA}.<TABLE> TO ROLE ${SERVICE_ROLE_NAME};${NC}"
     else
-        echo -e "${GREEN}✅ Permissions verified on API_KEYS table${NC}"
+        echo -e "${GREEN}✅ All table permissions granted successfully${NC}"
     fi
     
     # Create admin user (username: admin, password: admin123)
@@ -716,7 +698,7 @@ create_snowflake_resources() {
     fi
     
     # Verify user
-    if snow sql -q "USE ROLE ${USER_ROLE}; SHOW USERS LIKE '${SERVICE_USER_NAME}'" 2>/dev/null | grep -qi "${SERVICE_USER_NAME}"; then
+    if snow sql -q "SHOW USERS LIKE '${SERVICE_USER_NAME}'" 2>/dev/null | grep -qi "${SERVICE_USER_NAME}"; then
         echo -e "${GREEN}✅ Service user ${SERVICE_USER_NAME} verified${NC}"
     else
         echo -e "${YELLOW}⚠️  Service user ${SERVICE_USER_NAME} may not exist (non-fatal)${NC}"
@@ -809,7 +791,7 @@ create_snowflake_resources() {
     # Create repository if it doesn't exist
     if [ "$REPO_EXISTS" = false ]; then
         echo -e "${BLUE}Creating image repository...${NC}"
-        CREATE_REPO_OUTPUT=$(snow sql -q "USE ROLE ${OBJECT_ROLE}; CREATE IMAGE REPOSITORY ${DATABASE}.${SCHEMA}.REPOSITORY" 2>&1)
+        CREATE_REPO_OUTPUT=$(snow sql -q "CREATE IMAGE REPOSITORY ${DATABASE}.${SCHEMA}.REPOSITORY" 2>&1)
         CREATE_REPO_EXIT=$?
         
         if [ $CREATE_REPO_EXIT -eq 0 ]; then
@@ -821,7 +803,7 @@ create_snowflake_resources() {
             elif echo "$CREATE_REPO_OUTPUT" | grep -qi "insufficient privileges\|permission denied"; then
                 echo -e "${YELLOW}⚠️  Insufficient privileges to create repository. Trying with ACCOUNTADMIN...${NC}"
                 # Try with ACCOUNTADMIN as fallback
-                if snow sql -q "USE ROLE ACCOUNTADMIN; CREATE IMAGE REPOSITORY IF NOT EXISTS ${DATABASE}.${SCHEMA}.REPOSITORY" 2>/dev/null; then
+                if snow sql -q "CREATE IMAGE REPOSITORY IF NOT EXISTS ${DATABASE}.${SCHEMA}.REPOSITORY" 2>/dev/null; then
                     echo -e "${GREEN}✅ Image repository created with ACCOUNTADMIN${NC}"
                 else
                     echo -e "${YELLOW}⚠️  Could not create image repository. Will attempt during image push.${NC}"
@@ -924,7 +906,7 @@ push_images() {
             echo -e "${RED}❌ Cannot determine registry URL. SNOWFLAKE_ACCOUNT not set.${NC}"
             echo -e "${YELLOW}   Attempting to create repository if it doesn't exist...${NC}"
             # Try to create repository as last resort
-            snow sql -q "USE ROLE ACCOUNTADMIN; CREATE IMAGE REPOSITORY IF NOT EXISTS ${DATABASE}.${SCHEMA}.REPOSITORY" > /dev/null 2>&1 || true
+            snow sql -q "CREATE IMAGE REPOSITORY IF NOT EXISTS ${DATABASE}.${SCHEMA}.REPOSITORY" > /dev/null 2>&1 || true
             # Try URL again after potential repository creation
             REGISTRY_BASE=$(snow spcs image-registry url --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null || echo "")
         fi
@@ -1141,10 +1123,10 @@ spec:
       SNOWFLAKE_WAREHOUSE: "${SNOWFLAKE_WAREHOUSE}"
       SNOWFLAKE_DATABASE: "${SNOWFLAKE_DATABASE}"
       SNOWFLAKE_SCHEMA: "${SNOWFLAKE_SCHEMA}"
-      SNOWFLAKE_ROLE: "${SNOWFLAKE_SERVICE_ROLE:-API_PROXY_SERVICE_ROLE}"
+      SNOWFLAKE_SERVICE_ROLE: "${SNOWFLAKE_SERVICE_ROLE:-API_PROXY_SERVICE_ROLE}"
       # Service account credentials - uses OAuth token from /snowflake/session/token when available (SPCS)
       # Falls back to username/password if OAuth not available
-      SNOWFLAKE_USERNAME: "${SNOWFLAKE_SERVICE_USER:-API_PROXY_SERVICE_USER}"
+      SNOWFLAKE_USERNAME: "${SNOWFLAKE_SERVICE_USER:-API_PROXY_SERVICE_MANAGER}"
       SNOWFLAKE_PASSWORD: "${SNOWFLAKE_SERVICE_USER_PASSWORD:-ChangeThisPassword123!}"
       JWT_SECRET: "${JWT_SECRET}"
       JWT_EXPIRES_IN: "24h"
@@ -1178,7 +1160,7 @@ spec:
   endpoints:
   - name: "api-endpoint"
     port: 3001
-    public: true
+    public: false
   - name: "web-endpoint"
     port: 80
     public: true
@@ -1208,7 +1190,7 @@ deploy_service() {
     
     # Check if service already exists
     SERVICE_EXISTS=false
-    if snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} >/dev/null 2>&1; then
+    if snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} >/dev/null 2>&1; then
         SERVICE_EXISTS=true
     elif snow spcs service list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -qi "${SERVICE_NAME}"; then
         SERVICE_EXISTS=true
@@ -1436,7 +1418,7 @@ wait_for_endpoint() {
             echo -e "${BLUE}   Still waiting for endpoint provisioning... (${ELAPSED}s elapsed)${NC}"
             echo -e "${BLUE}   Checking SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME} for INGRESS_URL...${NC}"
             # Show service status for debugging
-            SERVICE_STATUS=$(snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -i "status\|running" | head -2 || echo "")
+            SERVICE_STATUS=$(snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -i "status\|running" | head -2 || echo "")
             if [ -n "$SERVICE_STATUS" ]; then
                 echo -e "${BLUE}   Service status: $(echo "$SERVICE_STATUS" | head -1)${NC}"
             fi
@@ -1518,8 +1500,8 @@ wait_for_endpoint() {
         echo -e "${YELLOW}⚠️  Could not automatically detect endpoint URL after ${MAX_WAIT}s${NC}"
         echo -e "${YELLOW}⚠️  Service may still be starting or endpoint format may have changed${NC}"
         echo -e "${BLUE}📋 Manual steps to find endpoint:${NC}"
-        echo -e "${BLUE}   1. Check service logs: snow spcs service logs ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
-        echo -e "${BLUE}   2. Check service status: snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
+        echo -e "${BLUE}   1. Check service logs: snow spcs service logs ${SERVICE_NAME} --container-name backend --database ${DATABASE} --schema ${SCHEMA}${NC}"
+        echo -e "${BLUE}   2. Check service status: snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
         echo -e "${BLUE}   3. Query in Snowflake: SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}${NC}"
         echo -e "${BLUE}   4. Query in Snowflake: SELECT SYSTEM\$GET_SERVICE_URL('${DATABASE}.${SCHEMA}.${SERVICE_NAME}')${NC}"
         echo -e "${BLUE}   5. Check Snowflake UI for the service endpoint${NC}"
@@ -1533,16 +1515,18 @@ verify_deployment() {
     echo -e "${YELLOW}🔍 Verifying deployment...${NC}"
     
     # Get service status
-    if snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} > /dev/null 2>&1; then
+    if snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} > /dev/null 2>&1; then
         echo -e "${GREEN}✅ Service is running${NC}"
         
         # Show service status
         echo -e "${BLUE}Service Status:${NC}"
-        snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} || true
+        snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} || true
         
-        # Show service logs if available
-        echo -e "${BLUE}Recent Logs:${NC}"
-        snow spcs service logs ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>&1 | head -20 || echo "Could not retrieve logs (this is normal if logs command has different options)"
+        # Show service logs if available (for both containers)
+        echo -e "${BLUE}Recent Logs (backend):${NC}"
+        snow spcs service logs ${SERVICE_NAME} --container-name backend --database ${DATABASE} --schema ${SCHEMA} 2>&1 | head -20 || echo "Could not retrieve backend logs"
+        echo -e "${BLUE}Recent Logs (frontend):${NC}"
+        snow spcs service logs ${SERVICE_NAME} --container-name frontend --database ${DATABASE} --schema ${SCHEMA} 2>&1 | head -20 || echo "Could not retrieve frontend logs"
         
         # Verify endpoint is accessible if we have a URL
         if [ -n "$SERVICE_URL" ] && [[ "$SERVICE_URL" =~ ^https?:// ]]; then
@@ -1556,7 +1540,7 @@ verify_deployment() {
         fi
     else
         echo -e "${YELLOW}⚠️  Could not retrieve service status (service may still be starting)${NC}"
-        echo -e "${BLUE}   Check manually: snow spcs service status ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
+        echo -e "${BLUE}   Check manually: snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
     fi
 }
 
@@ -1622,16 +1606,18 @@ main() {
     echo -e "${GREEN}🎉 Deployment completed successfully!${NC}"
     echo ""
     echo -e "${BLUE}📋 Next steps:${NC}"
-    echo -e "  1. Verify the service is running: snow spcs service status ${SERVICE_NAME}"
-    echo -e "  2. View service logs: snow spcs service logs ${SERVICE_NAME}"
-    echo -e "  3. Test the API endpoints"
-    echo -e "  4. Configure monitoring and logging"
-    echo -e "  5. Set up SSL certificates if needed"
+    echo -e "  1. Verify the service is running: snow spcs service show ${SERVICE_NAME}"
+    echo -e "  2. View backend logs: snow spcs service logs ${SERVICE_NAME} --container-name backend"
+    echo -e "  3. View frontend logs: snow spcs service logs ${SERVICE_NAME} --container-name frontend"
+    echo -e "  4. Test the API endpoints"
+    echo -e "  5. Configure monitoring and logging"
+    echo -e "  6. Set up SSL certificates if needed"
     echo ""
     echo -e "${BLUE}📚 Useful Snow CLI commands:${NC}"
     echo -e "  - List services: snow spcs service list"
-    echo -e "  - Service status: snow spcs service status ${SERVICE_NAME}"
-    echo -e "  - View logs: snow spcs service logs ${SERVICE_NAME}"
+    echo -e "  - Service status: snow spcs service show ${SERVICE_NAME}"
+    echo -e "  - View backend logs: snow spcs service logs ${SERVICE_NAME} --container-name backend"
+    echo -e "  - View frontend logs: snow spcs service logs ${SERVICE_NAME} --container-name frontend"
     echo -e "  - Stop service: snow spcs service suspend ${SERVICE_NAME}"
     echo -e "  - Resume service: snow spcs service resume ${SERVICE_NAME}"
     echo -e "  - Delete service: snow spcs service drop ${SERVICE_NAME}"

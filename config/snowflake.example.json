@@ -1,6 +1,6 @@
 {
   "account": "your-account.snowflakecomputing.com",
-  "username": "API_PROXY_SERVICE_USER",
+  "username": "API_PROXY_SERVICE_MANAGER",
   "password": "ChangeThisPassword123!",
   "warehouse": "API_PROXY_WH",
   "database": "API_PROXY",

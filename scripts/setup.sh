@@ -98,7 +98,7 @@ create_config() {
         cat > .env << 'EOF'
 # Snowflake Configuration (for local development)
 SNOWFLAKE_ACCOUNT=your-account.snowflakecomputing.com
-SNOWFLAKE_USERNAME=API_PROXY_SERVICE_USER
+SNOWFLAKE_USERNAME=API_PROXY_SERVICE_MANAGER
 SNOWFLAKE_PASSWORD=ChangeThisPassword123!
 SNOWFLAKE_WAREHOUSE=API_PROXY_WH
 SNOWFLAKE_DATABASE=API_PROXY
