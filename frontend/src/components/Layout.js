@@ -19,6 +19,7 @@ const navigation = [
   { name: 'Endpoints', href: '/endpoints', icon: Server },
   { name: 'API Keys', href: '/api-keys', icon: Key },
   { name: 'Tags', href: '/tags', icon: Tag },
+  { name: 'Users', href: '/users', icon: User },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 

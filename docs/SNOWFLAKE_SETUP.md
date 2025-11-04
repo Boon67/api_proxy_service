@@ -349,6 +349,159 @@ For issues with Snowflake setup:
 3. Verify account permissions
 4. Contact Snowflake support if needed
 
+## Using PAT Tokens for SPCS Endpoint Access
+
+Snowflake PAT tokens can be used **directly** to access SPCS endpoints programmatically without needing to exchange them for short-lived access tokens. This makes programmatic access much simpler.
+
+### Creating PAT Tokens for Endpoint Access
+
+#### During Deployment
+
+The deployment script can automatically create a PAT token for the service user:
+
+```bash
+./scripts/deploy.sh --create-service-pat
+```
+
+Or set the environment variable:
+
+```bash
+export CREATE_SERVICE_PAT=true
+./scripts/deploy.sh
+```
+
+You can customize the token name and expiration:
+
+```bash
+./scripts/deploy.sh \
+  --create-service-pat \
+  --service-pat-name MY_API_TOKEN \
+  --service-pat-expiry-days 365
+```
+
+#### Manual Creation
+
+Create a PAT token manually using SQL:
+
+```sql
+ALTER USER API_PROXY_SERVICE_MANAGER
+  ADD PROGRAMMATIC ACCESS TOKEN api_proxy_pat
+  DAYS_TO_EXPIRY = 365;
+```
+
+**Important:** The command will return a `TOKEN_SECRET` value. **Save this immediately** - it will not be shown again!
+
+Example output:
+```
+TOKEN_SECRET = 'snowflake_token_value_here'
+```
+
+### Using PAT Tokens for API Access
+
+#### Authorization Header Format
+
+Use the `Snowflake Token="<PAT>"` format in the Authorization header:
+
+```bash
+curl -X GET https://<your-service-endpoint>.snowflakecomputing.app/api/endpoints \
+  -H "Authorization: Snowflake Token=\"your-pat-token-here\"" \
+  -H "Content-Type: application/json"
+```
+
+#### Python Example
+
+```python
+import requests
+
+pat_token = "your-pat-token-here"
+service_url = "https://your-service-endpoint.snowflakecomputing.app"
+
+headers = {
+    'Authorization': f'Snowflake Token="{pat_token}"',
+    'Content-Type': 'application/json'
+}
+
+# List all endpoints
+response = requests.get(
+    f'{service_url}/api/endpoints',
+    headers=headers
+)
+
+print(response.json())
+```
+
+### Service Role Access
+
+For a user to access SPCS endpoints using a PAT token, the user's role must have been granted the service role:
+
+```sql
+GRANT SERVICE ROLE DATABASE.SCHEMA.SERVICE_NAME!service_role_name 
+  TO ROLE your_role_name;
+```
+
+Example:
+```sql
+GRANT SERVICE ROLE API_PROXY.APP.SNOWFLAKE_API_PROXY!endpointaccessrole
+  TO ROLE API_PROXY_SERVICE_ROLE;
+```
+
+The deployment script automatically grants this role after service creation.
+
+### Authentication Priority
+
+The service supports multiple authentication methods in order of priority:
+
+1. **X-API-Key header** - For internal API keys (proxy endpoints)
+2. **Snowflake Token="<PAT>"** - For Snowflake PAT tokens (all endpoints)
+3. **Bearer <token>** - For JWT tokens (admin endpoints)
+4. **Query parameter** - `?API_KEY=...` or `?token=...`
+
+### Token Management
+
+#### View Existing PAT Tokens
+
+```sql
+SHOW PROGRAMMATIC ACCESS TOKENS FOR USER API_PROXY_SERVICE_MANAGER;
+```
+
+#### Revoke a PAT Token
+
+```sql
+ALTER USER API_PROXY_SERVICE_MANAGER
+  DROP PROGRAMMATIC ACCESS TOKEN token_name;
+```
+
+#### Restrict PAT Token to Specific Roles
+
+When creating a PAT token, you can restrict it to specific roles:
+
+```sql
+ALTER USER API_PROXY_SERVICE_MANAGER
+  ADD PROGRAMMATIC ACCESS TOKEN api_proxy_pat
+  RESTRICT TO ROLES (API_PROXY_SERVICE_ROLE)
+  DAYS_TO_EXPIRY = 365;
+```
+
+### Troubleshooting PAT Token Access
+
+#### 401 Unauthorized
+
+- Verify the PAT token is correct and not expired
+- Check that the user's role has been granted the appropriate service role
+- Ensure the Authorization header format is correct: `Snowflake Token="<token>"`
+
+#### Token Not Found
+
+- Verify the PAT token was created successfully
+- Check that you copied the entire token value
+- Ensure the user name matches exactly (case-sensitive)
+
+#### Access Denied
+
+- Verify the role has been granted access to the service
+- Check service role assignments: `SHOW GRANTS TO ROLE <role_name>`
+- Ensure the service role is correctly defined in the service specification
+
 ## Additional Resources
 
 - [Snowflake User Management](https://docs.snowflake.com/en/user-guide/admin-user-management.html)
@@ -356,3 +509,4 @@ For issues with Snowflake setup:
 - [Snowflake Security Best Practices](https://docs.snowflake.com/en/user-guide/security-best-practices.html)
 - [Snowflake PAT Token Documentation](https://docs.snowflake.com/en/user-guide/programmatic-access-tokens)
 - [Snowflake SDK Authentication](https://docs.snowflake.com/en/developer-guide/node-js/nodejs-driver-use#connecting)
+- [Snowflake Blog: Programmatic Access to SPCS](https://medium.com/snowflake/programmatic-access-to-snowpark-container-services-now-even-easier-0e1f97e801f3)

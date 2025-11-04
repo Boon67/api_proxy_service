@@ -139,23 +139,6 @@ const Login = () => {
               {isLoading ? 'Signing in...' : 'Sign in'}
             </button>
           </div>
-
-          <div className="mt-6">
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-snowflake-300" />
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-snowflake-50 text-snowflake-500">
-                  Demo Credentials
-                </span>
-              </div>
-            </div>
-            <div className="mt-4 text-center text-sm text-snowflake-600">
-              <p>Username: <code className="bg-snowflake-100 px-1 rounded">admin</code></p>
-              <p>Password: <code className="bg-snowflake-100 px-1 rounded">admin123</code></p>
-            </div>
-          </div>
         </form>
       </div>
     </div>

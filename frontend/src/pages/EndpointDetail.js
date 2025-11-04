@@ -216,7 +216,7 @@ const EndpointDetail = () => {
                 </a>
               </div>
               <p className="text-xs text-snowflake-500">
-                Use this URL with an API Key in the X-API-Key header or as a ?API_KEY= query parameter
+                Use this URL with a Snowflake PAT token in the Authorization header, an API Key in the X-API-Key header, or as a ?API_KEY= query parameter
               </p>
             </div>
           ) : (
@@ -231,10 +231,16 @@ const EndpointDetail = () => {
             {(() => {
               const endpointUrl = displayUrl;
               const apiKeyPlaceholder = 'YOUR_API_KEY';
+              const patTokenPlaceholder = 'YOUR_PAT_TOKEN';
               
               // Generate sample commands with placeholder
               const curlWithHeader = `curl -X ${endpointData.method || 'GET'} "${endpointUrl}" \\
   -H "X-API-Key: ${apiKeyPlaceholder}"`;
+              
+              const curlWithSnowflakeToken = `curl -X ${endpointData.method || 'GET'} "${endpointUrl}" \\
+  -H "Authorization: Snowflake Token=\\"${patTokenPlaceholder}\\"" \\
+  -H "X-API-Key: ${apiKeyPlaceholder}" \\
+  -H "Content-Type: application/json"`;
               
               const curlWithQuery = `curl -X ${endpointData.method || 'GET'} "${endpointUrl}?API_KEY=${apiKeyPlaceholder}"`;
 
@@ -243,6 +249,20 @@ const EndpointDetail = () => {
 api_key = "${apiKeyPlaceholder}"
 url = "${endpointUrl}"
 headers = {"X-API-Key": api_key}
+
+response = requests.${endpointData.method === 'POST' ? 'post' : 'get'}(url, headers=headers)
+print(response.json())`;
+
+              const pythonWithSnowflakeToken = `import requests
+
+pat_token = "${patTokenPlaceholder}"
+api_key = "${apiKeyPlaceholder}"
+url = "${endpointUrl}"
+headers = {
+    "Authorization": f'Snowflake Token="{pat_token}"',
+    "X-API-Key": api_key,
+    "Content-Type": "application/json"
+}
 
 response = requests.${endpointData.method === 'POST' ? 'post' : 'get'}(url, headers=headers)
 print(response.json())`;
@@ -257,6 +277,48 @@ print(response.json())`;
 
               return (
                 <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-medium text-snowflake-700">cURL (Snowflake PAT Token + API Key)</h4>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(curlWithSnowflakeToken);
+                          toast.success('cURL command copied!');
+                        }}
+                        className="px-2 py-1 text-xs font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded hover:bg-snowflake-50 flex items-center"
+                      >
+                        <Copy className="h-3 w-3 mr-1" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="bg-snowflake-50 rounded-md p-3 border border-snowflake-200">
+                      <pre className="text-xs text-snowflake-900 font-mono whitespace-pre-wrap break-all overflow-x-auto">
+                        {curlWithSnowflakeToken}
+                      </pre>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-medium text-snowflake-700">Python (Snowflake PAT Token + API Key)</h4>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(pythonWithSnowflakeToken);
+                          toast.success('Python code copied!');
+                        }}
+                        className="px-2 py-1 text-xs font-medium text-snowflake-700 bg-white border border-snowflake-300 rounded hover:bg-snowflake-50 flex items-center"
+                      >
+                        <Copy className="h-3 w-3 mr-1" />
+                        Copy
+                      </button>
+                    </div>
+                    <div className="bg-snowflake-50 rounded-md p-3 border border-snowflake-200">
+                      <pre className="text-xs text-snowflake-900 font-mono whitespace-pre-wrap break-all overflow-x-auto">
+                        {pythonWithSnowflakeToken}
+                      </pre>
+                    </div>
+                  </div>
+
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <h4 className="text-sm font-medium text-snowflake-700">cURL (X-API-Key Header)</h4>

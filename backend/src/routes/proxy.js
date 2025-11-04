@@ -18,9 +18,20 @@ const validatePATToken = async (req, res, next) => {
   if (req.headers['x-api-key']) {
     token = req.headers['x-api-key'];
   }
-  // Also support Authorization header for backward compatibility
-  else if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
-    token = req.headers.authorization.substring(7); // Remove "Bearer " prefix
+  // Support Snowflake Token format for SPCS programmatic access
+  // Format: Authorization: Snowflake Token="<PAT>"
+  else if (req.headers.authorization) {
+    const authHeader = req.headers.authorization;
+    // Check for Snowflake Token format (quoted or unquoted)
+    const snowflakeTokenMatch = authHeader.match(/^Snowflake Token="?([^"]+)"?$/i);
+    if (snowflakeTokenMatch) {
+      token = snowflakeTokenMatch[1];
+      logger.debug('Using Snowflake Token format for authentication');
+    }
+    // Also support Bearer token for backward compatibility
+    else if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7); // Remove "Bearer " prefix
+    }
   }
   
   // If not in header, try query parameters (support both API_KEY and token for backward compatibility)

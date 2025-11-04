@@ -10,13 +10,18 @@ const logger = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
 const authMiddleware = require('./middleware/auth');
 const requestLogger = require('./middleware/requestLogger');
+const telemetry = require('./middleware/telemetry');
 const apiRoutes = require('./routes/api');
 const proxyRoutes = require('./routes/proxy');
 const healthRoutes = require('./routes/health');
 const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Trust proxy to get real client IP (important for SPCS deployment)
+app.set('trust proxy', true);
 
 // Security middleware
 app.use(helmet());
@@ -50,10 +55,35 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // Rate limiting
+// When trust proxy is enabled, we need to disable the validation warning
+// and use a keyGenerator that properly extracts the real IP from headers
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 1000, // limit each IP to 1000 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.'
+  message: 'Too many requests from this IP, please try again later.',
+  // Disable trust proxy validation since we're properly handling it with keyGenerator
+  validate: {
+    trustProxy: false
+  },
+  // Use the real IP from headers when behind a proxy
+  keyGenerator: (req) => {
+    // Get the real IP from X-Forwarded-For header (first IP in the chain)
+    const forwarded = req.headers['x-forwarded-for'];
+    if (forwarded) {
+      const ips = forwarded.split(',').map(ip => ip.trim());
+      return ips[0]; // Return the original client IP (first in chain)
+    }
+    // Fallback to X-Real-IP header
+    if (req.headers['x-real-ip']) {
+      return req.headers['x-real-ip'];
+    }
+    // Final fallback to connection remote address
+    return req.connection?.remoteAddress || req.socket?.remoteAddress || 'unknown';
+  },
+  // Skip successful health checks to avoid rate limiting them
+  skip: (req) => {
+    return req.path === '/health' || req.path.startsWith('/health/');
+  }
 });
 app.use(limiter);
 
@@ -67,6 +97,10 @@ app.use(compression());
 // Enhanced request logging middleware (before morgan for detailed logging)
 app.use(requestLogger);
 
+// Telemetry middleware - logs all requests to database with metrics
+// Applied after requestLogger so we have requestId available
+app.use(telemetry);
+
 // Standard HTTP request logging
 app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
 
@@ -74,7 +108,13 @@ app.use(morgan('combined', { stream: { write: message => logger.info(message.tri
 app.use('/health', healthRoutes);
 
 // Auth routes (no auth required)
+// Mount at both /auth and /api/auth for compatibility
+// Frontend uses /api as base URL in production, so /auth/login becomes /api/auth/login
 app.use('/auth', authRoutes);
+app.use('/api/auth', authRoutes);
+
+// User management routes (require authentication)
+app.use('/api', authMiddleware, userRoutes);
 
 // API management routes (require admin auth)
 app.use('/api', authMiddleware, apiRoutes);

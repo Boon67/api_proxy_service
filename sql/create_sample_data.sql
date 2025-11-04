@@ -1,18 +1,46 @@
 -- =====================================================
 -- Snowflake API Proxy Service - Sample Data
 -- =====================================================
--- This script creates sample tags and a test endpoint for the API Proxy Service
+-- This script creates sample tags, a test endpoint, and an initial admin user
 -- Run this after running setup_service_account.sql and create_tables.sql
 --
 -- Creates:
+--   - Initial admin user (if no users exist)
 --   - Sample tags for typical company departments
 --   - A test endpoint that executes "SELECT 1;"
+--
+-- Note: deploy.sh will substitute placeholders:
+--   - INITIAL_ADMIN_USERNAME -> default: admin
+--   - INITIAL_ADMIN_PASSWORD_HASH -> bcrypt hashed password
+--   - INITIAL_ADMIN_EMAIL -> default: admin@example.com
+--   - INITIAL_ADMIN_FIRST_NAME -> default: Admin
+--   - INITIAL_ADMIN_LAST_NAME -> default: User
+--   - INITIAL_ADMIN_CONTACT -> optional
 --
 -- =====================================================
 
 USE ROLE ACCOUNTADMIN;
 USE DATABASE API_PROXY;
 USE SCHEMA APP;
+
+-- =====================================================
+-- 0. CREATE INITIAL ADMIN USER (if no users exist)
+-- =====================================================
+
+-- Create initial admin user if no users exist
+INSERT INTO USERS (USER_ID, USERNAME, PASSWORD_HASH, FIRST_NAME, LAST_NAME, EMAIL, CONTACT_NUMBER, ROLE, IS_ACTIVE, CREATED_BY)
+SELECT 
+    UUID_STRING(),
+    INITIAL_ADMIN_USERNAME,
+    INITIAL_ADMIN_PASSWORD_HASH,
+    INITIAL_ADMIN_FIRST_NAME,
+    INITIAL_ADMIN_LAST_NAME,
+    INITIAL_ADMIN_EMAIL,
+    INITIAL_ADMIN_CONTACT,
+    'admin',
+    TRUE,
+    'deploy-script'
+WHERE NOT EXISTS (SELECT 1 FROM USERS);
 
 -- =====================================================
 -- 1. CREATE SAMPLE TAGS FOR TYPICAL COMPANY DEPARTMENTS

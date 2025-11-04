@@ -12,6 +12,7 @@ import EditEndpoint from './pages/EditEndpoint';
 import APIKeys from './pages/APIKeys';
 import Tags from './pages/Tags';
 import Settings from './pages/Settings';
+import Users from './pages/Users';
 import Login from './pages/Login';
 
 import { AuthProvider } from './contexts/AuthContext';
@@ -54,6 +55,7 @@ function AppContent() {
             <Route path="/endpoints/:id/edit" element={<EditEndpoint />} />
             <Route path="/api-keys" element={<APIKeys />} />
             <Route path="/tags" element={<Tags />} />
+            <Route path="/users" element={<Users />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </Layout>

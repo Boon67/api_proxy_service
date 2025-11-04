@@ -66,6 +66,34 @@ parse_args() {
                 DEBUG_ENDPOINT=true
                 shift
                 ;;
+            --sample-data-only|--create-sample-data)
+                SAMPLE_DATA_ONLY=true
+                shift
+                ;;
+            --create-service-pat)
+                CREATE_SERVICE_PAT=true
+                shift
+                ;;
+            --service-pat-name)
+                SERVICE_PAT_NAME="$2"
+                shift 2
+                ;;
+            --service-pat-expiry-days)
+                SERVICE_PAT_EXPIRY_DAYS="$2"
+                shift 2
+                ;;
+            --service-only|--deploy-service-only)
+                SERVICE_ONLY=true
+                shift
+                ;;
+            --build-and-deploy|--images-and-service)
+                BUILD_AND_DEPLOY=true
+                shift
+                ;;
+            --verbose|-v)
+                VERBOSE=true
+                shift
+                ;;
             --help|-h)
                 show_help=true
                 shift
@@ -95,6 +123,19 @@ Options:
       --recreate-compute-pool Drop and recreate compute pool if it exists
       --check-endpoint        Check if endpoint URL exists and exit (debug mode)
       --debug-endpoint        Enable debug output for endpoint detection
+      --sample-data-only      Only create sample data (tags, endpoint, initial user)
+                              Skips full deployment. Requires existing database/schema.
+      --create-service-pat    Create Snowflake PAT token for service user
+                              Requires MODIFY PROGRAMMATIC AUTHENTICATION METHODS permission
+      --service-pat-name NAME Name for the PAT token (default: API_PROXY_SERVICE_PAT)
+      --service-pat-expiry-days DAYS
+                              Days until PAT token expires (default: 365)
+      --service-only           Only deploy/update the service (skip build/push)
+                              Assumes images already exist in registry
+      --build-and-deploy       Build, push images, and deploy service
+                              Skips resource creation (database, tables, etc.)
+                              Useful for updating images and redeploying
+      --verbose, -v            Enable verbose output for debugging
   -h, --help                  Show this help message
   
   Note: These defaults align with sql/setup_service_account.sql and sql/create_tables.sql.
@@ -112,6 +153,12 @@ Examples:
   $0 v1.0.0                             # Specify version
   $0 --database MY_DB --schema MY_SCHEMA # Override database and schema
   $0 -d MY_DB -w MY_WH v1.0.0           # Use short flags with version
+  $0 --create-service-pat               # Create PAT token during deployment
+  $0 --create-service-pat --service-pat-name MY_TOKEN --service-pat-expiry-days 180
+  $0 --service-only                     # Only deploy service (skip build/push)
+  $0 --service-only --verbose            # Deploy service with verbose output
+  $0 --build-and-deploy                 # Build, push, and deploy (skip resource creation)
+  $0 --build-and-deploy --verbose        # Build, push, deploy with verbose output
 
 EOF
         exit 0
@@ -132,6 +179,18 @@ show_config() {
     echo -e "${BLUE}Database: ${DATABASE}${NC}"
     echo -e "${BLUE}Schema: ${SCHEMA}${NC}"
     echo -e "${BLUE}Warehouse: ${WAREHOUSE}${NC}"
+    
+    if [ "${SERVICE_ONLY:-false}" = "true" ]; then
+        echo -e "${YELLOW}Mode: Service deployment only (skipping build/push)${NC}"
+    elif [ "${BUILD_AND_DEPLOY:-false}" = "true" ]; then
+        echo -e "${YELLOW}Mode: Build, push, and deploy (skipping resource creation)${NC}"
+    fi
+    
+    if [ "${VERBOSE:-false}" = "true" ]; then
+        echo -e "${YELLOW}Verbose mode: Enabled${NC}"
+        set -x  # Enable bash debug mode for verbose output
+    fi
+    
     echo ""
 }
 
@@ -168,113 +227,82 @@ check_docker() {
     echo -e "${GREEN}✅ Docker found and running${NC}"
 }
 
-# Prompt for environment variable if not set
-prompt_for_var() {
-    local var_name=$1
-    local prompt_text=$2
-    local is_secret=${3:-false}
-    
-    if [ -z "${!var_name}" ]; then
-        if [ "$is_secret" = "true" ]; then
-            echo -e "${BLUE}${prompt_text}:${NC} "
-            read -s var_value
-            echo ""
-        else
-            echo -e "${BLUE}${prompt_text}:${NC} "
-            read var_value
-        fi
-        export "$var_name=$var_value"
+# Hash password for initial admin user
+hash_password() {
+    local password=$1
+    # Try to hash password using Node.js if available
+    if command -v node >/dev/null 2>&1; then
+        node -e "const bcrypt = require('bcryptjs'); bcrypt.hash(process.argv[1], 12, (e, h) => { if (e) { console.error(e.message); process.exit(1); } else { console.log(h); } });" "$password" 2>/dev/null || echo ""
+    else
+        echo ""
     fi
 }
 
-# Check if required environment variables are set, prompt if missing
-check_and_prompt_env_vars() {
-    echo -e "${YELLOW}🔍 Checking Snowflake connection and configuration...${NC}"
+# Create sample data only (used by --sample-data-only flag)
+create_sample_data_only() {
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}📦 Creating sample data only (skipping full deployment)${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
-    # First, try to test the default Snow CLI connection
-    if snow connection test 2>/dev/null; then
-        echo -e "${GREEN}✅ Default Snow CLI connection works!${NC}"
-        # Try to get values from Snow CLI config if available
-        # Only extract if environment variables are not set (preserves flags)
-        if [ -f ~/.snowflake/config.toml ]; then
-            # Extract values from config file using sed (portable across macOS and Linux)
-            # Look for patterns like: account = "value" or account = 'value'
-            # Only set SNOWFLAKE_* env vars if not already set (preserves flags)
-            SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT:-$(sed -n 's/.*account[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' ~/.snowflake/config.toml 2>/dev/null | head -1 || sed -n "s/.*account[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" ~/.snowflake/config.toml 2>/dev/null | head -1)}
-            SNOWFLAKE_USERNAME=${SNOWFLAKE_USERNAME:-$(sed -n 's/.*user[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' ~/.snowflake/config.toml 2>/dev/null | head -1 || sed -n "s/.*user[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" ~/.snowflake/config.toml 2>/dev/null | head -1)}
-            SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE:-$(sed -n 's/.*warehouse[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' ~/.snowflake/config.toml 2>/dev/null | head -1 || sed -n "s/.*warehouse[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" ~/.snowflake/config.toml 2>/dev/null | head -1)}
-            SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE:-$(sed -n 's/.*database[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' ~/.snowflake/config.toml 2>/dev/null | head -1 || sed -n "s/.*database[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" ~/.snowflake/config.toml 2>/dev/null | head -1)}
-            SNOWFLAKE_SCHEMA=${SNOWFLAKE_SCHEMA:-$(sed -n 's/.*schema[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' ~/.snowflake/config.toml 2>/dev/null | head -1 || sed -n "s/.*schema[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" ~/.snowflake/config.toml 2>/dev/null | head -1)}
-            
-            # Now apply env vars to working variables if flags weren't set
-            # (parse_args already handled env vars, but config extraction happens after)
-            WAREHOUSE=${WAREHOUSE:-${SNOWFLAKE_WAREHOUSE:-$DEFAULT_WAREHOUSE}}
-            DATABASE=${DATABASE:-${SNOWFLAKE_DATABASE:-$DEFAULT_DATABASE}}
-            SCHEMA=${SCHEMA:-${SNOWFLAKE_SCHEMA:-$DEFAULT_SCHEMA}}
-            
-            # Export extracted values
-            export SNOWFLAKE_ACCOUNT
-            export SNOWFLAKE_USERNAME
-            export SNOWFLAKE_WAREHOUSE
-            export SNOWFLAKE_DATABASE
-            export SNOWFLAKE_SCHEMA
-        fi
-        return 0
+    check_snow_cli
+    authenticate_snowflake
+    
+    # Verify database and schema exist
+    echo -e "${BLUE}Verifying database and schema exist...${NC}"
+    if ! snow sql -q "SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null | grep -qi "${DATABASE}"; then
+        echo -e "${RED}❌ Database ${DATABASE} does not exist${NC}"
+        echo -e "${YELLOW}   Please run the full deployment first, or create the database manually${NC}"
+        exit 1
     fi
     
-    # Connection doesn't work, need to set up
-    echo -e "${YELLOW}⚠️  Default Snow CLI connection not configured or failed${NC}"
-    echo -e "${BLUE}Please provide Snowflake connection details:${NC}"
+    if ! snow sql -q "USE DATABASE ${DATABASE}; SHOW SCHEMAS LIKE '${SCHEMA}'" 2>/dev/null | grep -qi "${SCHEMA}"; then
+        echo -e "${RED}❌ Schema ${DATABASE}.${SCHEMA} does not exist${NC}"
+        echo -e "${YELLOW}   Please run the full deployment first, or create the schema manually${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✅ Database ${DATABASE} and schema ${SCHEMA} verified${NC}"
     echo ""
     
-    # Prompt for required Snowflake connection variables
-    prompt_for_var "SNOWFLAKE_ACCOUNT" "Snowflake Account (e.g., abc12345.snowflakecomputing.com or abc12345)"
-    prompt_for_var "SNOWFLAKE_USERNAME" "Snowflake Username"
-    prompt_for_var "SNOWFLAKE_PASSWORD" "Snowflake Password" true
-    prompt_for_var "SNOWFLAKE_WAREHOUSE" "Warehouse Name" false
-    prompt_for_var "SNOWFLAKE_DATABASE" "Database Name" false
-    prompt_for_var "SNOWFLAKE_SCHEMA" "Schema Name (default: ${DEFAULT_SCHEMA})" false
+    # Create sample data
+    create_sample_data_impl
     
-    # Set defaults if not provided
-    SCHEMA=${SNOWFLAKE_SCHEMA:-${SCHEMA:-$DEFAULT_SCHEMA}}
-    WAREHOUSE=${SNOWFLAKE_WAREHOUSE:-${WAREHOUSE}}
-    DATABASE=${SNOWFLAKE_DATABASE:-${DATABASE}}
-    
-    # Update global variables
-    export SNOWFLAKE_ACCOUNT
-    export SNOWFLAKE_USERNAME
-    export SNOWFLAKE_PASSWORD
-    export SNOWFLAKE_WAREHOUSE
-    export SNOWFLAKE_DATABASE
-    export SNOWFLAKE_SCHEMA
+    echo ""
+    echo -e "${GREEN}🎉 Sample data creation completed!${NC}"
+    echo ""
 }
 
-# Check for application-specific environment variables
-check_app_env_vars() {
-    echo -e "${YELLOW}🔍 Checking application configuration...${NC}"
+# Implementation of sample data creation (used by both full deployment and --sample-data-only)
+create_sample_data_impl() {
+    echo -e "${BLUE}Creating sample data (tags, test endpoint, and initial admin user if needed)...${NC}"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SQL_DIR="${SCRIPT_DIR}/../sql"
+    CREATE_SAMPLE_DATA_SQL="${SQL_DIR}/create_sample_data.sql"
     
-    # Check for JWT_SECRET
-    if [ -z "$JWT_SECRET" ]; then
-        echo -e "${YELLOW}⚠️  JWT_SECRET not set - generating automatically...${NC}"
-        # Generate a random JWT secret automatically
-        JWT_SECRET=$(openssl rand -base64 32 2>/dev/null || openssl rand -hex 32 2>/dev/null || \
-                     python3 -c "import secrets; print(secrets.token_urlsafe(32))" 2>/dev/null || \
-                     date +%s | sha256sum | base64 | head -c 64 || \
-                     echo "$(date +%s | md5sum | head -c 64)$(openssl rand -hex 16 2>/dev/null || echo 'fallback_secret_key_12345')")
-        if [ -z "$JWT_SECRET" ]; then
-            echo -e "${RED}❌ Failed to generate JWT_SECRET. Please set JWT_SECRET environment variable.${NC}"
-            exit 1
-        fi
-        echo -e "${GREEN}✅ Generated JWT_SECRET automatically${NC}"
-        export JWT_SECRET
+    if [ ! -f "$CREATE_SAMPLE_DATA_SQL" ]; then
+        echo -e "${YELLOW}⚠️  Sample data SQL script not found: ${CREATE_SAMPLE_DATA_SQL}${NC}"
+        echo -e "${BLUE}   Skipping sample data creation${NC}"
+        return 1
     fi
     
-    # Check compute pool
-    if [ -z "$SNOWFLAKE_COMPUTE_POOL" ]; then
-        prompt_for_var "SNOWFLAKE_COMPUTE_POOL" "Compute Pool Name (default: API_PROXY_POOL)"
-        SNOWFLAKE_COMPUTE_POOL=${SNOWFLAKE_COMPUTE_POOL:-"API_PROXY_POOL"}
-        export SNOWFLAKE_COMPUTE_POOL
-        COMPUTE_POOL=$SNOWFLAKE_COMPUTE_POOL
+    if execute_sql_script "$CREATE_SAMPLE_DATA_SQL"; then
+        echo -e "${GREEN}✅ Sample data created successfully${NC}"
+        # Check if user was created
+        USER_COUNT=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SELECT COUNT(*) AS CNT FROM USERS" 2>/dev/null | grep -E "^[[:space:]]*[1-9]" | head -1 | tr -d '[:space:]' || echo "0")
+        if [ "$USER_COUNT" != "0" ] && [ -n "$USER_COUNT" ]; then
+            INITIAL_USERNAME="${INITIAL_ADMIN_USERNAME:-admin}"
+            INITIAL_PASSWORD="${INITIAL_ADMIN_PASSWORD:-Admin123!}"
+            echo -e "${BLUE}   Initial admin user created: ${INITIAL_USERNAME}${NC}"
+            echo -e "${YELLOW}   ⚠️  Default password: ${INITIAL_PASSWORD} (change after first login)${NC}"
+        fi
+        echo -e "${BLUE}   Created tags: Engineering, Sales, Marketing, Finance, Operations, HR, Legal, Product${NC}"
+        echo -e "${BLUE}   Created endpoint: 'Test Connection' (SELECT 1;)${NC}"
+        return 0
+    else
+        echo -e "${YELLOW}⚠️  Could not create sample data${NC}"
+        echo -e "${BLUE}   Sample data can be created manually later by running:${NC}"
+        echo -e "${BLUE}   snow sql -f ${CREATE_SAMPLE_DATA_SQL}${NC}"
+        return 1
     fi
 }
 
@@ -384,6 +412,62 @@ execute_sql_script() {
     
     # Third pass: replace remaining standalone API_PROXY (database name)
     sed -i.bak "s/\bAPI_PROXY\b/${DATABASE}/g" "$temp_sql"
+    
+    # Fourth pass: replace initial admin user placeholders (only for create_sample_data.sql)
+    if echo "$sql_file" | grep -q "create_sample_data"; then
+        # Get credentials from environment variables or use defaults
+        INITIAL_USERNAME="${INITIAL_ADMIN_USERNAME:-admin}"
+        INITIAL_PASSWORD="${INITIAL_ADMIN_PASSWORD:-Admin123!}"
+        INITIAL_EMAIL="${INITIAL_ADMIN_EMAIL:-admin@example.com}"
+        INITIAL_FIRST_NAME="${INITIAL_ADMIN_FIRST_NAME:-Admin}"
+        INITIAL_LAST_NAME="${INITIAL_ADMIN_LAST_NAME:-User}"
+        INITIAL_CONTACT="${INITIAL_ADMIN_CONTACT:-}"
+        
+        # Hash the password
+        PASSWORD_HASH=$(hash_password "$INITIAL_PASSWORD")
+        
+        if [ -z "$PASSWORD_HASH" ]; then
+            echo -e "${YELLOW}⚠️  Could not hash password - skipping initial user creation${NC}"
+            echo -e "${BLUE}   Install Node.js to enable password hashing, or create user manually${NC}"
+            # Remove the user creation part from the SQL
+            sed -i.bak '/-- 0\. CREATE INITIAL ADMIN USER/,/WHERE NOT EXISTS (SELECT 1 FROM USERS);/d' "$temp_sql"
+        else
+            # Replace placeholders with actual values (placeholders are identifiers, need quotes)
+            # Convert username to uppercase (bash 3.2 compatible)
+            UPPER_USERNAME=$(echo "$INITIAL_USERNAME" | tr '[:lower:]' '[:upper:]')
+            # Escape special characters for sed
+            ESCAPED_PASSWORD_HASH=$(echo "$PASSWORD_HASH" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            ESCAPED_USERNAME=$(echo "$UPPER_USERNAME" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            ESCAPED_EMAIL=$(echo "$INITIAL_EMAIL" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            ESCAPED_FIRST_NAME=$(echo "$INITIAL_FIRST_NAME" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            ESCAPED_LAST_NAME=$(echo "$INITIAL_LAST_NAME" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            
+            # Debug: Show what we're replacing
+            echo -e "${BLUE}   Replacing placeholders for initial admin user...${NC}"
+            echo -e "${BLUE}   Username: ${UPPER_USERNAME}${NC}"
+            
+            # Replace placeholders (simple pattern - placeholders are unique identifiers)
+            # Just match the placeholder text directly since they're unique in the SQL file
+            sed -i.bak "s|INITIAL_ADMIN_USERNAME|'${ESCAPED_USERNAME}'|g" "$temp_sql"
+            sed -i.bak "s|INITIAL_ADMIN_PASSWORD_HASH|'${ESCAPED_PASSWORD_HASH}'|g" "$temp_sql"
+            sed -i.bak "s|INITIAL_ADMIN_EMAIL|'${ESCAPED_EMAIL}'|g" "$temp_sql"
+            sed -i.bak "s|INITIAL_ADMIN_FIRST_NAME|'${ESCAPED_FIRST_NAME}'|g" "$temp_sql"
+            sed -i.bak "s|INITIAL_ADMIN_LAST_NAME|'${ESCAPED_LAST_NAME}'|g" "$temp_sql"
+            if [ -n "$INITIAL_CONTACT" ]; then
+                ESCAPED_CONTACT=$(echo "$INITIAL_CONTACT" | sed 's/[[\.*^$()+?{|]/\\&/g')
+                sed -i.bak "s|INITIAL_ADMIN_CONTACT|'${ESCAPED_CONTACT}'|g" "$temp_sql"
+            else
+                sed -i.bak "s|INITIAL_ADMIN_CONTACT|NULL|g" "$temp_sql"
+            fi
+            
+            # Verify replacement worked by checking if placeholder still exists
+            if grep -q "INITIAL_ADMIN_USERNAME" "$temp_sql"; then
+                echo -e "${YELLOW}⚠️  Warning: INITIAL_ADMIN_USERNAME placeholder still found after replacement${NC}"
+                echo -e "${BLUE}   Debug: Showing lines with placeholders...${NC}"
+                grep "INITIAL_ADMIN" "$temp_sql" | head -5 || true
+            fi
+        fi
+    fi
     
     # Clean up backup file
     rm -f "$temp_sql.bak"
@@ -544,139 +628,19 @@ create_snowflake_resources() {
         exit 1
     fi
     
+    # Execute create_tables.sql and capture output
+    echo -e "${BLUE}Executing create_tables.sql...${NC}"
     if execute_sql_script "$CREATE_TABLES_SQL"; then
-        echo -e "${GREEN}✅ Application tables created successfully${NC}"
+        echo -e "${GREEN}✅ SQL script execution completed${NC}"
     else
-        echo -e "${RED}❌ Failed to create application tables${NC}"
+        echo -e "${RED}❌ Failed to execute create_tables.sql${NC}"
         echo -e "${YELLOW}   Check the error messages above and verify your permissions${NC}"
-        exit 1
     fi
     
-    # Grant permissions on all application tables to the service role
-    echo -e "${BLUE}Granting permissions on all tables to ${SERVICE_ROLE_NAME}...${NC}"
+    create_sample_data_impl
     
-    # Define all tables and their required permissions
-    # Note: Audit/log tables don't get DELETE to preserve audit trail
-    # Using array instead of associative array for better shell compatibility
-    GRANT_FAILED=false
-    
-    # Grant permissions on each table
-    grant_table_permissions() {
-        local TABLE_NAME=$1
-        local PERMISSIONS=$2
-        
-        echo -e "${BLUE}   Granting ${PERMISSIONS} on ${TABLE_NAME}...${NC}"
-        
-        # Check if table exists before granting permissions
-        TABLE_EXISTS=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW TABLES LIKE '${TABLE_NAME}'" 2>/dev/null | grep -i "${TABLE_NAME}" || echo "")
-        
-        if [ -z "$TABLE_EXISTS" ]; then
-            echo -e "${YELLOW}   ⚠️  Table ${TABLE_NAME} does not exist, skipping permissions${NC}"
-            return
-        fi
-        
-        # Grant permissions on the table
-        if snow sql -q "GRANT ${PERMISSIONS} ON TABLE ${DATABASE}.${SCHEMA}.${TABLE_NAME} TO ROLE ${SERVICE_ROLE_NAME}" 2>&1; then
-            echo -e "${GREEN}   ✅ Permissions granted on ${TABLE_NAME}${NC}"
-        else
-            echo -e "${RED}   ❌ Failed to grant permissions on ${TABLE_NAME}${NC}"
-            GRANT_FAILED=true
-        fi
-    }
-    
-    # Grant permissions on all tables
-    grant_table_permissions "USERS" "SELECT,INSERT,UPDATE,DELETE"
-    grant_table_permissions "ENDPOINTS" "SELECT,INSERT,UPDATE,DELETE"
-    grant_table_permissions "API_KEYS" "SELECT,INSERT,UPDATE,DELETE"
-    grant_table_permissions "TAGS" "SELECT,INSERT,UPDATE,DELETE"
-    grant_table_permissions "ENDPOINT_TAGS" "SELECT,INSERT,UPDATE,DELETE"
-    grant_table_permissions "API_AUDIT_LOG" "SELECT,INSERT,UPDATE"
-    grant_table_permissions "API_USAGE_LOG" "SELECT,INSERT,UPDATE"
-    grant_table_permissions "SYSTEM_SETTINGS" "SELECT,INSERT,UPDATE,DELETE"
-    
-    # Grant permissions on views
-    echo -e "${BLUE}Granting permissions on views to ${SERVICE_ROLE_NAME}...${NC}"
-    
-    grant_view_permissions() {
-        local VIEW_NAME=$1
-        
-        # Check if view exists
-        VIEW_EXISTS=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW VIEWS LIKE '${VIEW_NAME}'" 2>/dev/null | grep -i "${VIEW_NAME}" || echo "")
-        
-        if [ -z "$VIEW_EXISTS" ]; then
-            echo -e "${YELLOW}   ⚠️  View ${VIEW_NAME} does not exist, skipping permissions${NC}"
-            return
-        fi
-        
-        if snow sql -q "GRANT SELECT ON VIEW ${DATABASE}.${SCHEMA}.${VIEW_NAME} TO ROLE ${SERVICE_ROLE_NAME}" 2>&1; then
-            echo -e "${GREEN}   ✅ SELECT permission granted on view ${VIEW_NAME}${NC}"
-        else
-            echo -e "${YELLOW}   ⚠️  Failed to grant SELECT permission on view ${VIEW_NAME}${NC}"
-        fi
-    }
-    
-    # Grant permissions on all views (check each one individually)
-    grant_view_permissions "ENDPOINTS_WITH_TOKENS"
-    grant_view_permissions "ENDPOINT_STATISTICS"
-    grant_view_permissions "API_USAGE_STATS"
-    grant_view_permissions "TOKEN_USAGE_STATS"
-    grant_view_permissions "ENDPOINT_USAGE_SUMMARY"
-    
-    if [ "$GRANT_FAILED" = true ]; then
-        echo -e "${YELLOW}⚠️  Some permissions failed to be granted. Check errors above.${NC}"
-        echo -e "${BLUE}   You may need to grant permissions manually using:${NC}"
-        echo -e "${BLUE}   GRANT <PERMISSIONS> ON TABLE ${DATABASE}.${SCHEMA}.<TABLE> TO ROLE ${SERVICE_ROLE_NAME};${NC}"
-    else
-        echo -e "${GREEN}✅ All table permissions granted successfully${NC}"
-    fi
-    
-    # Create admin user (username: admin, password: admin123)
-    echo -e "${BLUE}Creating admin user (admin/admin123)...${NC}"
-    CREATE_ADMIN_USER_SQL="${SQL_DIR}/create_admin_user.sql"
-    
-    if [ ! -f "$CREATE_ADMIN_USER_SQL" ]; then
-        echo -e "${RED}❌ Admin user SQL script not found: ${CREATE_ADMIN_USER_SQL}${NC}"
-        echo -e "${YELLOW}   Skipping admin user creation${NC}"
-    else
-        if execute_sql_script "$CREATE_ADMIN_USER_SQL"; then
-            echo -e "${GREEN}✅ Admin user created successfully${NC}"
-            echo -e "${BLUE}   Username: admin${NC}"
-            echo -e "${BLUE}   Password: admin123${NC}"
-            echo -e "${YELLOW}   ⚠️  Please change the default password after first login${NC}"
-        else
-            echo -e "${YELLOW}⚠️  Could not create admin user via script${NC}"
-            echo -e "${BLUE}   The admin user may have already been created by create_tables.sql${NC}"
-            echo -e "${BLUE}   Verifying admin user exists...${NC}"
-            ADMIN_USER_EXISTS=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SELECT COUNT(*) AS CNT FROM USERS WHERE USERNAME = 'admin'" 2>/dev/null | grep -E "^[[:space:]]*[0-9]+" | head -1 | tr -d '[:space:]' || echo "0")
-            if [ "$ADMIN_USER_EXISTS" != "0" ] && [ -n "$ADMIN_USER_EXISTS" ]; then
-                echo -e "${GREEN}✅ Admin user already exists${NC}"
-                echo -e "${BLUE}   Username: admin${NC}"
-                echo -e "${BLUE}   Password: admin123${NC}"
-            else
-                echo -e "${RED}❌ Admin user does not exist${NC}"
-                echo -e "${BLUE}   You may need to create it manually: snow sql -f ${CREATE_ADMIN_USER_SQL}${NC}"
-            fi
-        fi
-    fi
-    
-    # Create sample tags and endpoint for testing
-    echo -e "${BLUE}Creating sample data (tags and test endpoint)...${NC}"
-    CREATE_SAMPLE_DATA_SQL="${SQL_DIR}/create_sample_data.sql"
-    
-    if [ ! -f "$CREATE_SAMPLE_DATA_SQL" ]; then
-        echo -e "${YELLOW}⚠️  Sample data SQL script not found: ${CREATE_SAMPLE_DATA_SQL}${NC}"
-        echo -e "${BLUE}   Skipping sample data creation${NC}"
-    else
-        if execute_sql_script "$CREATE_SAMPLE_DATA_SQL"; then
-            echo -e "${GREEN}✅ Sample tags and test endpoint created successfully${NC}"
-            echo -e "${BLUE}   Created tags: Engineering, Sales, Marketing, Finance, Operations, HR, Legal, Product${NC}"
-            echo -e "${BLUE}   Created endpoint: 'Test Connection' (SELECT 1;)${NC}"
-        else
-            echo -e "${YELLOW}⚠️  Could not create sample data${NC}"
-            echo -e "${BLUE}   Sample data can be created manually later by running:${NC}"
-            echo -e "${BLUE}   snow sql -f ${CREATE_SAMPLE_DATA_SQL}${NC}"
-        fi
-    fi
+    # Create Snowflake PAT token for service user (optional)
+    create_service_pat_token
     
     # Verify key resources were created
     echo -e "${BLUE}Verifying resources were created...${NC}"
@@ -1065,11 +1029,11 @@ push_images() {
         
         # Verify images exist in registry (optional check)
         echo -e "${BLUE}Verifying images in registry...${NC}"
-        if snow spcs image list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -qi "${IMAGE_NAME}"; then
+        if snow spcs image-repository list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -qi "${IMAGE_NAME}"; then
             echo -e "${GREEN}✅ Images verified in registry${NC}"
-            snow spcs image list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -i "${IMAGE_NAME}" | head -5
+            snow spcs image-repository list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -i "${IMAGE_NAME}" | head -5
         else
-            echo -e "${YELLOW}⚠️  Could not verify images via 'snow spcs image list' (this is normal, images may not be queryable yet)${NC}"
+            echo -e "${YELLOW}⚠️  Could not verify images via 'snow spcs image-repository list' (this is normal, images may not be queryable yet)${NC}"
         fi
     else
         echo -e "${RED}❌ Image push failed or incomplete${NC}"
@@ -1102,6 +1066,27 @@ create_service_spec() {
                               snow spcs image-registry url 2>/dev/null || \
                               echo "${SNOWFLAKE_ACCOUNT}.registry.snowflakecomputing.com")
     
+    # Ensure SNOWFLAKE_ACCOUNT is set (extract from connection if needed)
+    if [ -z "$SNOWFLAKE_ACCOUNT" ]; then
+        SNOWFLAKE_ACCOUNT=$(snow connection show 2>/dev/null | grep -i account | head -1 | sed 's/.*account[[:space:]]*:[[:space:]]*//i' | tr -d ' ' || echo "")
+        # If still empty, try to extract from registry URL
+        if [ -z "$SNOWFLAKE_ACCOUNT" ] && [ -n "$REGISTRY_BASE_FOR_SPEC" ]; then
+            SNOWFLAKE_ACCOUNT=$(echo "$REGISTRY_BASE_FOR_SPEC" | sed 's/\.registry\.snowflakecomputing\.com//' | sed 's/.*\///')
+        fi
+    fi
+    
+    # Extract account identifier (remove .snowflakecomputing.com if present)
+    SNOWFLAKE_ACCOUNT_ID=$(echo "$SNOWFLAKE_ACCOUNT" | sed 's/\.snowflakecomputing\.com$//' | sed 's/\.registry\.snowflakecomputing\.com$//')
+    
+    # Ensure WAREHOUSE is set (use default if not provided)
+    if [ -z "$WAREHOUSE" ]; then
+        WAREHOUSE="API_PROXY_WH"
+        echo -e "${YELLOW}⚠️  WAREHOUSE not set, using default: ${WAREHOUSE}${NC}"
+    fi
+    
+    # Ensure SNOWFLAKE_WAREHOUSE is set for service spec
+    SNOWFLAKE_WAREHOUSE="${SNOWFLAKE_WAREHOUSE:-${WAREHOUSE}}"
+    
     # Use full registry URL format for service spec: <registry>/<db>/<schema>/<repo>/<image>:<tag>
     DB_LOWER_FOR_SPEC=$(echo "${DATABASE}" | tr '[:upper:]' '[:lower:]')
     SCHEMA_LOWER_FOR_SPEC=$(echo "${SCHEMA}" | tr '[:upper:]' '[:lower:]')
@@ -1119,7 +1104,8 @@ spec:
       HOST: "0.0.0.0"
       # Snowflake connection - uses OAuth token from /snowflake/session/token when available
       # SNOWFLAKE_HOST and SNOWFLAKE_ACCOUNT are automatically provided by Snowflake SPCS
-      SNOWFLAKE_ACCOUNT: "${SNOWFLAKE_ACCOUNT}"
+      # Do NOT set SNOWFLAKE_ACCOUNT manually - Snowflake provides it automatically
+      # SNOWFLAKE_ACCOUNT is automatically set to the account locator by Snowflake
       SNOWFLAKE_WAREHOUSE: "${SNOWFLAKE_WAREHOUSE}"
       SNOWFLAKE_DATABASE: "${SNOWFLAKE_DATABASE}"
       SNOWFLAKE_SCHEMA: "${SNOWFLAKE_SCHEMA}"
@@ -1158,15 +1144,64 @@ spec:
         memory: "128Mi"
         cpu: "0.1"
   endpoints:
-  - name: "api-endpoint"
+  - name: "apiendpoint"
     port: 3001
     public: false
-  - name: "web-endpoint"
+  - name: "webendpoint"
     port: 80
     public: true
+serviceRoles:
+- name: endpointaccessrole
+  endpoints:
+  - webendpoint
 EOF
 
     echo -e "${GREEN}✅ Service specification created${NC}"
+}
+
+# Grant service role to enable PAT token access
+grant_service_role() {
+    echo -e "${YELLOW}🔐 Granting service role for endpoint access...${NC}"
+    
+    # Service role name from spec
+    SERVICE_ROLE_NAME_SR="endpointaccessrole"
+    
+    # Full service role reference: DATABASE.SCHEMA.SERVICE_NAME!SERVICE_ROLE_NAME
+    FULL_SERVICE_ROLE="${DATABASE}.${SCHEMA}.${SERVICE_NAME}!${SERVICE_ROLE_NAME_SR}"
+    
+    # Target role to grant to (the application service role)
+    TARGET_ROLE="API_PROXY_SERVICE_ROLE"
+    
+    echo -e "${BLUE}   Granting: ${FULL_SERVICE_ROLE}${NC}"
+    echo -e "${BLUE}   To role: ${TARGET_ROLE}${NC}"
+    
+    GRANT_OUTPUT=$(snow sql -q "GRANT SERVICE ROLE ${FULL_SERVICE_ROLE} TO ROLE ${TARGET_ROLE};" 2>&1)
+    GRANT_EXIT=$?
+    
+    if [ -n "$GRANT_OUTPUT" ]; then
+        if [ "${VERBOSE:-false}" = "true" ]; then
+            echo -e "${BLUE}   Grant output:${NC}"
+            echo "$GRANT_OUTPUT" | sed 's/^/   /'
+        fi
+    fi
+    
+    if [ $GRANT_EXIT -eq 0 ] && ! echo "$GRANT_OUTPUT" | grep -qiE "error|failed|does not exist"; then
+        echo -e "${GREEN}✅ Service role granted successfully${NC}"
+        echo -e "${BLUE}   Role ${TARGET_ROLE} now has access to service endpoints via PAT tokens${NC}"
+        return 0
+    else
+        # Check if it's already granted (not an error)
+        if echo "$GRANT_OUTPUT" | grep -qiE "already granted|already has"; then
+            echo -e "${BLUE}ℹ️  Service role already granted${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}⚠️  Could not grant service role:${NC}"
+            echo "$GRANT_OUTPUT" | sed 's/^/   /'
+            echo -e "${YELLOW}   This may need to be done manually:${NC}"
+            echo -e "${BLUE}   GRANT SERVICE ROLE ${FULL_SERVICE_ROLE} TO ROLE ${TARGET_ROLE};${NC}"
+            return 1
+        fi
+    fi
 }
 
 # Deploy to Snowflake Container Services using Snow CLI
@@ -1188,22 +1223,114 @@ deploy_service() {
     
     create_service_spec
     
-    # Check if service already exists
+    # Check if service already exists - use SQL query as most reliable method
     SERVICE_EXISTS=false
-    if snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} >/dev/null 2>&1; then
-        SERVICE_EXISTS=true
-    elif snow spcs service list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -qi "${SERVICE_NAME}"; then
-        SERVICE_EXISTS=true
+    echo -e "${BLUE}Checking if service ${SERVICE_NAME} already exists...${NC}"
+    
+    # Method 1: Use SQL SHOW SERVICES command (most reliable)
+    if [ "${VERBOSE:-false}" = "true" ]; then
+        echo -e "${BLUE}DEBUG: Running SHOW SERVICES query...${NC}"
+    fi
+    SHOW_SERVICES_OUTPUT=$(snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}; SHOW SERVICES LIKE '${SERVICE_NAME}';" 2>&1)
+    if [ "${VERBOSE:-false}" = "true" ]; then
+        echo -e "${BLUE}DEBUG: SHOW SERVICES output:${NC}"
+        echo "$SHOW_SERVICES_OUTPUT" | head -20
+    fi
+    # Check if service exists - look for actual service data, not just "No data" or error messages
+    if echo "$SHOW_SERVICES_OUTPUT" | grep -qiE "No data|does not exist|not found|0 rows"; then
+        # Service definitely doesn't exist
+        SERVICE_EXISTS=false
+    elif echo "$SHOW_SERVICES_OUTPUT" | grep -qiE "${SERVICE_NAME}"; then
+        # Service name appears in output - verify it's not in an error message
+        if ! echo "$SHOW_SERVICES_OUTPUT" | grep -qiE "does not exist|not found|0 rows|No data"; then
+            SERVICE_EXISTS=true
+            echo -e "${GREEN}✅ Service ${SERVICE_NAME} found via SHOW SERVICES${NC}"
+        fi
+    fi
+    
+    # Method 2: Try service list command as backup
+    if [ "$SERVICE_EXISTS" != "true" ]; then
+        if [ "${VERBOSE:-false}" = "true" ]; then
+            echo -e "${BLUE}DEBUG: Trying service list command as backup...${NC}"
+        fi
+        LIST_OUTPUT_WITH_CONTEXT=$(snow spcs service list --database ${DATABASE} --schema ${SCHEMA} 2>&1)
+        if [ "${VERBOSE:-false}" = "true" ]; then
+            echo -e "${BLUE}DEBUG: Service list output:${NC}"
+            echo "$LIST_OUTPUT_WITH_CONTEXT" | head -20
+        fi
+        if [ $? -eq 0 ] && echo "$LIST_OUTPUT_WITH_CONTEXT" | grep -qiE "${SERVICE_NAME}"; then
+            # Make sure it's not just table headers
+            if echo "$LIST_OUTPUT_WITH_CONTEXT" | grep -qiE "^[[:space:]]*${SERVICE_NAME}|${SERVICE_NAME}[[:space:]]*"; then
+                SERVICE_EXISTS=true
+                echo -e "${GREEN}✅ Service ${SERVICE_NAME} found via service list${NC}"
+            fi
+        fi
+    fi
+    
+    # Debug output if service not found
+    if [ "$SERVICE_EXISTS" != "true" ]; then
+        echo -e "${BLUE}   Service ${SERVICE_NAME} not found via checks${NC}"
+        echo -e "${BLUE}   Will attempt to create (if service exists, create will detect 'already exists' and update instead)${NC}"
     fi
     
     if [ "$SERVICE_EXISTS" = true ]; then
-        echo -e "${GREEN}✅ Service ${SERVICE_NAME} already exists - skipping creation${NC}"
-        echo -e "${BLUE}   Using existing service${NC}"
+        echo -e "${GREEN}✅ Service ${SERVICE_NAME} already exists${NC}"
+        echo -e "${BLUE}   Updating service with new images...${NC}"
+        
+        # Update the service to use new images from the spec
+        echo -e "${BLUE}   Suspending service to update...${NC}"
+        SUSPEND_OUTPUT=$(snow spcs service suspend ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>&1)
+        SUSPEND_EXIT=$?
+        
+        if [ $SUSPEND_EXIT -eq 0 ]; then
+            echo -e "${GREEN}✅ Service suspended${NC}"
+        else
+            # Service might already be suspended or in a state where suspend isn't needed
+            if echo "$SUSPEND_OUTPUT" | grep -qiE "already suspended|not running|inactive"; then
+                echo -e "${BLUE}   Service is already suspended or stopped${NC}"
+            else
+                echo -e "${YELLOW}⚠️  Could not suspend service (may already be stopped):${NC}"
+                echo "$SUSPEND_OUTPUT" | sed 's/^/   /'
+            fi
+        fi
+        
+        # Wait a moment for service to fully stop
+        sleep 3
+        
+        # Note: snow spcs service set does not support --spec-path or --compute-pool
+        # Service spec cannot be updated via CLI - only properties like min/max instances
+        # Since we've pushed new images with the same tags to the registry,
+        # resuming the service will cause it to pull the updated images
+        echo -e "${BLUE}   Note: Service specification cannot be updated via CLI${NC}"
+        echo -e "${BLUE}   New images have been pushed to registry - service will pull them on resume${NC}"
+        
+        # Resume/start the service with new images
+        echo -e "${BLUE}   Resuming service with updated images...${NC}"
+        RESUME_OUTPUT=$(snow spcs service resume ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>&1)
+        RESUME_EXIT=$?
+        
+        if [ -n "$RESUME_OUTPUT" ]; then
+            echo -e "${BLUE}   Resume output:${NC}"
+            echo "$RESUME_OUTPUT" | sed 's/^/   /'
+        fi
+        
+        if [ $RESUME_EXIT -eq 0 ]; then
+            echo -e "${GREEN}✅ Service resumed with updated images${NC}"
+            # Grant service role after successful resume
+            grant_service_role || true
+        else
+            echo -e "${YELLOW}⚠️  Service resume had issues${NC}"
+            echo -e "${YELLOW}   Service may be starting up, check status with: snow spcs service list --database ${DATABASE} --schema ${SCHEMA}${NC}"
+        fi
     else
         # Create new service
         echo -e "${BLUE}Creating new service ${SERVICE_NAME}...${NC}"
+        echo -e "${BLUE}   This may take several minutes...${NC}"
         # Set database context before creating service
         snow sql -q "USE DATABASE ${DATABASE}; USE SCHEMA ${SCHEMA}" > /dev/null 2>&1
+        
+        # Show what command is being run for debugging
+        echo -e "${BLUE}   Command: snow spcs service create ${SERVICE_NAME} --compute-pool ${COMPUTE_POOL} --spec-path service-spec.yaml --database ${DATABASE} --schema ${SCHEMA}${NC}"
         
         CREATE_OUTPUT=$(snow spcs service create ${SERVICE_NAME} \
             --compute-pool ${COMPUTE_POOL} \
@@ -1212,14 +1339,74 @@ deploy_service() {
             --schema ${SCHEMA} 2>&1)
         CREATE_EXIT=$?
         
-        # Check if the error is "already exists" - this is acceptable
-        if echo "$CREATE_OUTPUT" | grep -qiE "already exists"; then
-            echo -e "${GREEN}✅ Service ${SERVICE_NAME} already exists${NC}"
+        # Always show output for debugging
+        if [ -n "$CREATE_OUTPUT" ]; then
+            echo -e "${BLUE}   Service creation output:${NC}"
+            echo "$CREATE_OUTPUT" | sed 's/^/   /'
+        fi
+        
+        # Check if the error is "already exists" - treat this as success and update instead
+        # This is the most reliable way to detect existing services
+        if echo "$CREATE_OUTPUT" | grep -qiE "already exists|already exist"; then
+            echo -e "${YELLOW}⚠️  Service ${SERVICE_NAME} already exists (detected during create attempt)${NC}"
+            echo -e "${BLUE}   Switching to update mode...${NC}"
+            
+            # Mark service as existing so we can use the update path
+            SERVICE_EXISTS=true
+            
+            # Service exists but our check missed it - update it now
+            echo -e "${BLUE}   Suspending service to update...${NC}"
+            SUSPEND_OUTPUT=$(snow spcs service suspend ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>&1)
+            SUSPEND_EXIT=$?
+            
+            if [ $SUSPEND_EXIT -eq 0 ]; then
+                echo -e "${GREEN}✅ Service suspended${NC}"
+            elif echo "$SUSPEND_OUTPUT" | grep -qiE "already suspended|not running|inactive"; then
+                echo -e "${BLUE}   Service is already suspended or stopped${NC}"
+            else
+                echo -e "${YELLOW}⚠️  Could not suspend service, but continuing with update...${NC}"
+                echo "$SUSPEND_OUTPUT" | sed 's/^/   /'
+            fi
+            
+            sleep 3
+            
+            # Note: Service spec cannot be updated via CLI - images are already pushed to registry
+            echo -e "${BLUE}   New images have been pushed to registry${NC}"
+            echo -e "${BLUE}   Service will pull updated images when resumed${NC}"
+            
+            echo -e "${BLUE}   Resuming service with updated images...${NC}"
+            RESUME_OUTPUT=$(snow spcs service resume ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>&1)
+            RESUME_EXIT=$?
+            
+            if [ -n "$RESUME_OUTPUT" ]; then
+                echo -e "${BLUE}   Resume output:${NC}"
+                echo "$RESUME_OUTPUT" | sed 's/^/   /'
+            fi
+            
+            if [ $RESUME_EXIT -eq 0 ]; then
+                echo -e "${GREEN}✅ Service resumed with updated images${NC}"
+                # Grant service role after successful resume
+                grant_service_role || true
+            else
+                echo -e "${YELLOW}⚠️  Service resume had issues${NC}"
+                echo -e "${YELLOW}   Service may be starting up, it should come online shortly${NC}"
+            fi
+            
+            # Skip the rest of create logic, go straight to wait_for_endpoint
+            return 0
         elif [ $CREATE_EXIT -eq 0 ]; then
             echo -e "${GREEN}✅ Service created successfully${NC}"
+            # Grant service role after successful creation
+            grant_service_role || true
         else
-            echo "$CREATE_OUTPUT"
-            echo -e "${RED}❌ Failed to create service${NC}"
+            echo -e "${RED}❌ Failed to create service (exit code: ${CREATE_EXIT})${NC}"
+            echo -e "${YELLOW}   Full output shown above${NC}"
+            echo -e "${YELLOW}   Please check the error messages above for details${NC}"
+            echo -e "${BLUE}   Common issues:${NC}"
+            echo -e "${BLUE}     - Compute pool does not exist or is not ready${NC}"
+            echo -e "${BLUE}     - Image registry authentication failed${NC}"
+            echo -e "${BLUE}     - Insufficient permissions on database/schema${NC}"
+            echo -e "${BLUE}     - Service specification file has errors${NC}"
             exit 1
         fi
     fi
@@ -1417,10 +1604,10 @@ wait_for_endpoint() {
         if [ $((ELAPSED % 30)) -eq 0 ]; then
             echo -e "${BLUE}   Still waiting for endpoint provisioning... (${ELAPSED}s elapsed)${NC}"
             echo -e "${BLUE}   Checking SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME} for INGRESS_URL...${NC}"
-            # Show service status for debugging
-            SERVICE_STATUS=$(snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -i "status\|running" | head -2 || echo "")
+            # Show service status for debugging (using list command)
+            SERVICE_STATUS=$(snow spcs service list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -i "${SERVICE_NAME}" | head -1 || echo "")
             if [ -n "$SERVICE_STATUS" ]; then
-                echo -e "${BLUE}   Service status: $(echo "$SERVICE_STATUS" | head -1)${NC}"
+                echo -e "${BLUE}   Service found in list: $(echo "$SERVICE_STATUS" | head -1)${NC}"
             fi
         fi
         
@@ -1501,7 +1688,7 @@ wait_for_endpoint() {
         echo -e "${YELLOW}⚠️  Service may still be starting or endpoint format may have changed${NC}"
         echo -e "${BLUE}📋 Manual steps to find endpoint:${NC}"
         echo -e "${BLUE}   1. Check service logs: snow spcs service logs ${SERVICE_NAME} --container-name backend --database ${DATABASE} --schema ${SCHEMA}${NC}"
-        echo -e "${BLUE}   2. Check service status: snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
+        echo -e "${BLUE}   2. Check service list: snow spcs service list --database ${DATABASE} --schema ${SCHEMA}${NC}"
         echo -e "${BLUE}   3. Query in Snowflake: SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME}${NC}"
         echo -e "${BLUE}   4. Query in Snowflake: SELECT SYSTEM\$GET_SERVICE_URL('${DATABASE}.${SCHEMA}.${SERVICE_NAME}')${NC}"
         echo -e "${BLUE}   5. Check Snowflake UI for the service endpoint${NC}"
@@ -1515,12 +1702,15 @@ verify_deployment() {
     echo -e "${YELLOW}🔍 Verifying deployment...${NC}"
     
     # Get service status
-    if snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} > /dev/null 2>&1; then
+    # Check if service exists by listing services
+    SERVICE_CHECK=$(snow spcs service list --database ${DATABASE} --schema ${SCHEMA} 2>/dev/null | grep -qi "${SERVICE_NAME}" && echo "exists" || echo "not_found")
+    
+    if [ "$SERVICE_CHECK" = "exists" ]; then
         echo -e "${GREEN}✅ Service is running${NC}"
         
         # Show service status
         echo -e "${BLUE}Service Status:${NC}"
-        snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA} || true
+        snow spcs service list --database ${DATABASE} --schema ${SCHEMA} | grep -i "${SERVICE_NAME}" || true
         
         # Show service logs if available (for both containers)
         echo -e "${BLUE}Recent Logs (backend):${NC}"
@@ -1540,7 +1730,7 @@ verify_deployment() {
         fi
     else
         echo -e "${YELLOW}⚠️  Could not retrieve service status (service may still be starting)${NC}"
-        echo -e "${BLUE}   Check manually: snow spcs service show ${SERVICE_NAME} --database ${DATABASE} --schema ${SCHEMA}${NC}"
+        echo -e "${BLUE}   Check manually: snow spcs service list --database ${DATABASE} --schema ${SCHEMA}${NC}"
     fi
 }
 
@@ -1564,35 +1754,79 @@ main() {
     # Display configuration
     show_config
     
-    check_snow_cli
-    check_docker
-    check_and_prompt_env_vars
-    authenticate_snowflake
-    
-    # Create Snowflake resources (database, warehouse, role, user)
-    # Continue even if there are expected errors (like USE ROLE for service role)
-    if ! create_snowflake_resources; then
-        echo -e "${YELLOW}⚠️  Resource creation had issues, but continuing with deployment...${NC}"
-        # Check if critical resources exist before continuing
+    # If --service-only or --build-and-deploy, skip resource creation
+    if [ "${SERVICE_ONLY:-false}" = "true" ]; then
+        # Service-only mode: Skip resource creation, just verify minimum requirements
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}Service-only deployment mode${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        
+        check_snow_cli
+        authenticate_snowflake
+        
+        # Quick verification that database exists (required for service deployment)
         if ! snow sql -q "SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null | grep -qi "${DATABASE}"; then
-            echo -e "${RED}❌ Critical resource (database) was not created. Cannot continue.${NC}"
+            echo -e "${RED}❌ Database ${DATABASE} not found${NC}"
+            echo -e "${YELLOW}   Service-only mode requires existing database. Run full deployment first.${NC}"
             exit 1
+        fi
+        
+        echo -e "${GREEN}✅ Database ${DATABASE} verified${NC}"
+    elif [ "${BUILD_AND_DEPLOY:-false}" = "true" ]; then
+        # Build-and-deploy mode: Skip resource creation, verify database exists
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}Build and deploy mode${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        
+        check_snow_cli
+        check_docker
+        authenticate_snowflake
+        
+        # Quick verification that database exists (required for service deployment)
+        if ! snow sql -q "SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null | grep -qi "${DATABASE}"; then
+            echo -e "${RED}❌ Database ${DATABASE} not found${NC}"
+            echo -e "${YELLOW}   Build-and-deploy mode requires existing database. Run full deployment first.${NC}"
+            exit 1
+        fi
+        
+        echo -e "${GREEN}✅ Database ${DATABASE} verified${NC}"
+    else
+        # Full deployment: Create resources and proceed
+        check_snow_cli
+        check_docker
+        authenticate_snowflake
+        
+        # Create Snowflake resources (database, warehouse, role, user)
+        # Continue even if there are expected errors (like USE ROLE for service role)
+        if ! create_snowflake_resources; then
+            echo -e "${YELLOW}⚠️  Resource creation had issues, but continuing with deployment...${NC}"
+            # Check if critical resources exist before continuing
+            if ! snow sql -q "SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null | grep -qi "${DATABASE}"; then
+                echo -e "${RED}❌ Critical resource (database) was not created. Cannot continue.${NC}"
+                exit 1
+            fi
         fi
     fi
     
-    check_app_env_vars
-    
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}Starting image build and push phase...${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    build_images
-    
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}Starting image push phase...${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
-    push_images
+    # Skip build/push if --service-only flag is set
+    if [ "${SERVICE_ONLY:-false}" != "true" ]; then
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}Starting image build and push phase...${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        
+        build_images
+        
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}Starting image push phase...${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        
+        push_images
+    else
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}Skipping image build and push (--service-only flag set)${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}ℹ️  Using existing images in registry${NC}"
+    fi
     
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Starting service deployment phase...${NC}"
@@ -1606,7 +1840,7 @@ main() {
     echo -e "${GREEN}🎉 Deployment completed successfully!${NC}"
     echo ""
     echo -e "${BLUE}📋 Next steps:${NC}"
-    echo -e "  1. Verify the service is running: snow spcs service show ${SERVICE_NAME}"
+    echo -e "  1. Verify the service is running: snow spcs service list --database ${DATABASE} --schema ${SCHEMA}"
     echo -e "  2. View backend logs: snow spcs service logs ${SERVICE_NAME} --container-name backend"
     echo -e "  3. View frontend logs: snow spcs service logs ${SERVICE_NAME} --container-name frontend"
     echo -e "  4. Test the API endpoints"
@@ -1614,8 +1848,8 @@ main() {
     echo -e "  6. Set up SSL certificates if needed"
     echo ""
     echo -e "${BLUE}📚 Useful Snow CLI commands:${NC}"
-    echo -e "  - List services: snow spcs service list"
-    echo -e "  - Service status: snow spcs service show ${SERVICE_NAME}"
+    echo -e "  - List services: snow spcs service list --database ${DATABASE} --schema ${SCHEMA}"
+    echo -e "  - Service status: snow spcs service list --database ${DATABASE} --schema ${SCHEMA} | grep ${SERVICE_NAME}"
     echo -e "  - View backend logs: snow spcs service logs ${SERVICE_NAME} --container-name backend"
     echo -e "  - View frontend logs: snow spcs service logs ${SERVICE_NAME} --container-name frontend"
     echo -e "  - Stop service: snow spcs service suspend ${SERVICE_NAME}"

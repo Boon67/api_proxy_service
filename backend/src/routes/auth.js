@@ -117,13 +117,16 @@ router.post('/login', async (req, res) => {
     console.error(`[${requestId}] Login error details:`, errorDetails);
     
     // Determine if this is a database-related error
+    const errorCodeStr = error.code ? (typeof error.code === 'string' ? error.code : error.code.toString()) : '';
     const isDatabaseError = error.code && (
-      error.code.startsWith('0800') || // Connection errors
-      error.code.startsWith('0900') || // SQL execution errors
+      errorCodeStr.startsWith('0800') || // Connection errors
+      errorCodeStr.startsWith('0900') || // SQL execution errors
       error.sqlState ||
       error.message.toLowerCase().includes('table') ||
       error.message.toLowerCase().includes('database') ||
-      error.message.toLowerCase().includes('connection')
+      error.message.toLowerCase().includes('connection') ||
+      error.message.toLowerCase().includes('invalid account') ||
+      error.message.toLowerCase().includes('account')
     );
     
     res.status(500).json({

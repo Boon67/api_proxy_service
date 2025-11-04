@@ -73,9 +73,9 @@ class TokenService {
     };
   }
 
-  async revokePATToken(token) {
+  async revokePATToken(token, revokedBy = 'system') {
     const tokenHash = this.hashToken(token);
-    const result = await databaseService.revokePATToken(tokenHash);
+    const result = await databaseService.revokePATToken(tokenHash, revokedBy);
     logger.info(`PAT token revoked: ${token.substring(0, 8)}...`);
     return result;
   }

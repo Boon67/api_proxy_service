@@ -295,7 +295,7 @@ npm run test:deploy:e2e
   --verbose            # Show detailed output
 ```
 
-See [DEPLOYMENT_TESTING.md](./DEPLOYMENT_TESTING.md) for detailed testing information.
+See the [Testing Deployment](#testing-deployment) section above for detailed testing information.
 
 ## Post-Deployment
 
@@ -339,7 +339,7 @@ curl ${SERVICE_URL}/health
 # Test login
 curl -X POST ${SERVICE_URL}/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin123"}'
+  -d '{"username":"your-username","password":"your-password"}'
 ```
 
 ### 4. Access the Application
@@ -655,19 +655,229 @@ DROP ROLE IF EXISTS API_PROXY_SERVICE_ROLE;
 **Error: "Insufficient privileges"**
 - Ensure your default Snow CLI role has permissions to drop all resources
 
+## Deployment Scripts Reference
+
+This section provides detailed information about the deployment scripts available in the `scripts/` directory.
+
+### `deploy.sh` - Main Deployment Script
+
+**Purpose**: Deploys the service to Snowflake Container Services
+
+**Usage**:
+```bash
+./scripts/deploy.sh [OPTIONS] [VERSION]
+# or
+npm run deploy
+npm run deploy:production
+```
+
+**Features**:
+- Creates Snowflake resources (database, warehouse, role, user) via SQL scripts
+- Builds Docker images for linux/amd64
+- Pushes images to Snowflake Image Registry
+- Deploys service to Snowflake Container Services
+- Verifies deployment
+- Automatically grants service roles for PAT token access
+
+**Key Options**:
+- `--database`, `-d`: Database name (default: API_PROXY)
+- `--schema`, `-s`: Schema name (default: APP)
+- `--warehouse`, `-w`: Warehouse name (default: API_PROXY_WH)
+- `--compute-pool`, `-c`: Compute pool name (default: API_PROXY_POOL)
+- `--version`, `-v`: Image version tag (default: latest)
+- `--service-only`: Only deploy/update service (skip build/push)
+- `--build-and-deploy`: Build, push, and deploy (skip resource creation)
+- `--create-service-pat`: Create PAT token for service user
+- `--sample-data-only`: Only create sample data (tags, endpoint, initial user)
+- `--verbose`, `-v`: Enable verbose output for debugging
+
+**Deployment Modes**:
+
+1. **Full Deployment** (default):
+   ```bash
+   ./scripts/deploy.sh
+   ```
+   - Creates all resources
+   - Builds images
+   - Pushes images
+   - Deploys service
+
+2. **Service Only** (skip build/push):
+   ```bash
+   ./scripts/deploy.sh --service-only
+   ```
+   - Skips resource creation
+   - Skips image build/push
+   - Only deploys/updates service
+   - Assumes images already exist
+
+3. **Build and Deploy** (skip resource creation):
+   ```bash
+   ./scripts/deploy.sh --build-and-deploy
+   ```
+   - Skips resource creation
+   - Builds images
+   - Pushes images
+   - Deploys service
+   - Useful for updating code/images
+
+### `cleanup.sh` - Resource Cleanup Script
+
+**Purpose**: Removes all deployed Snowflake resources
+
+**Usage**:
+```bash
+./scripts/cleanup.sh [OPTIONS]
+# or
+npm run cleanup           # Interactive
+npm run cleanup:yes      # Auto-confirm
+```
+
+**Removes**:
+- Container Service
+- Compute Pool
+- Database (and all contained objects)
+- Warehouse
+- Service User
+- Service Role
+
+**Options**:
+- `--database`, `-d`: Database name to remove
+- `--warehouse`, `-w`: Warehouse name to remove
+- `--compute-pool`, `-c`: Compute pool name to remove
+- `--database-only`: Only remove database (keep service, compute pool, etc.)
+- `--skip-service`: Don't remove service
+- `--skip-compute-pool`: Don't remove compute pool
+- `--skip-warehouse`: Don't remove warehouse
+- `--skip-user`: Don't remove user
+- `--skip-role`: Don't remove role
+- `--yes`, `-y`: Skip confirmation prompt
+
+### `health-check.sh` - Service Health Monitoring
+
+**Purpose**: Monitors service health and status
+
+**Usage**:
+```bash
+./scripts/health-check.sh
+# or
+npm run health-check
+```
+
+**Features**:
+- Checks backend health endpoint
+- Checks frontend accessibility
+- Tests API endpoints
+- Monitors Docker containers (if running locally)
+- Checks system resources (memory, disk, ports)
+- Generates health report
+
+**Environment Variables**:
+- `BACKEND_URL`: Backend URL (default: http://localhost:3001)
+- `FRONTEND_URL`: Frontend URL (default: http://localhost:3000)
+- `SERVICE_URL`: Service URL (overrides both URLs for production)
+- `TIMEOUT`: Request timeout in seconds (default: 10)
+
+### `setup.sh` - Development Environment Setup
+
+**Purpose**: Sets up local development environment
+
+**Usage**:
+```bash
+./scripts/setup.sh
+# or
+npm run setup
+```
+
+**Features**:
+- Checks Node.js and Docker installation
+- Installs all dependencies (root, backend, frontend)
+- Creates necessary directories
+- Sets up configuration files (.env, config/snowflake.json)
+- Provides next steps guidance
+
+**Note**: This script is for local development setup only. For production deployment, use `deploy.sh`.
+
+### Script Relationships
+
+```
+deploy.sh
+  ├── Uses SQL scripts (setup_service_account.sql, create_tables.sql)
+  ├── Calls: build_images(), push_images(), deploy_service()
+  └── Creates resources that cleanup.sh can remove
+
+cleanup.sh
+  └── Removes resources created by deploy.sh
+
+test-deploy-validation.sh
+  └── Quick validation before running deploy.sh
+
+test-deploy-e2e.sh
+  └── Full test of deploy.sh functionality (uses test resources)
+
+setup.sh
+  └── Local development setup (separate from deployment)
+
+health-check.sh
+  └── Monitoring (works with both local and deployed services)
+```
+
+### Common Workflows
+
+**First-Time Setup**:
+```bash
+# 1. Set up development environment
+npm run setup
+
+# 2. Validate prerequisites
+npm run test:deploy
+
+# 3. Deploy to Snowflake
+npm run deploy:production
+```
+
+**Regular Deployment**:
+```bash
+# Deploy new version
+./scripts/deploy.sh v1.1.0
+
+# Check service health
+npm run health-check
+
+# Or check via Snow CLI
+snow spcs service list --database API_PROXY --schema APP
+```
+
+**Cleanup and Redeploy**:
+```bash
+# Remove existing deployment
+npm run cleanup:yes
+
+# Deploy fresh
+npm run deploy:production
+```
+
+**Testing Before Deployment**:
+```bash
+# Quick validation
+npm run test:deploy
+
+# Full E2E test (creates and cleans up test resources)
+npm run test:deploy:e2e
+```
+
 ## Useful Snow CLI Commands
 
 ```bash
 # Service Management
-snow spcs service list
-snow spcs service status SNOWFLAKE_API_PROXY --database API_PROXY --schema APP
-snow spcs service logs SNOWFLAKE_API_PROXY --database API_PROXY --schema APP
+snow spcs service list --database API_PROXY --schema APP
+snow spcs service logs SNOWFLAKE_API_PROXY --container-name backend --instance-id 0 --database API_PROXY --schema APP
 snow spcs service suspend SNOWFLAKE_API_PROXY --database API_PROXY --schema APP
 snow spcs service resume SNOWFLAKE_API_PROXY --database API_PROXY --schema APP
 snow spcs service drop SNOWFLAKE_API_PROXY --database API_PROXY --schema APP
 
 # Image Management
-snow spcs image list
+snow spcs image-repository list
 snow spcs image-registry url
 snow spcs image-registry login
 

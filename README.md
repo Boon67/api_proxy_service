@@ -49,7 +49,29 @@ A comprehensive API proxy service designed to run on Snowflake Container Service
    cd ../backend && npm install
    ```
 
-4. **Start Development Servers**
+4. **Initial Admin User**
+   
+   The deployment script automatically creates an initial admin user if no users exist:
+   - **Default username**: `admin`
+   - **Default password**: `Admin123!`
+   
+   You can customize these via environment variables:
+   ```bash
+   export INITIAL_ADMIN_USERNAME="myadmin"
+   export INITIAL_ADMIN_PASSWORD="MySecurePass123"
+   export INITIAL_ADMIN_EMAIL="admin@example.com"
+   export INITIAL_ADMIN_FIRST_NAME="Admin"
+   export INITIAL_ADMIN_LAST_NAME="User"
+   export INITIAL_ADMIN_CONTACT="+1-555-123-4567"
+   ./scripts/deploy.sh
+   ```
+   
+   Or manually create a user after deployment:
+   ```bash
+   node scripts/create_first_user.js <username> <password> [email] [firstName] [lastName] [contactNumber]
+   ```
+
+5. **Start Development Servers**
    ```bash
    # Option 1: Use the startup script (recommended)
    ./scripts/start.sh
@@ -65,12 +87,12 @@ A comprehensive API proxy service designed to run on Snowflake Container Service
    npm run dev:frontend
    ```
 
-5. **Configuration**
+6. **Configuration**
    - Copy `config/snowflake.example.json` to `config/snowflake.json`
    - Update Snowflake connection details with service account credentials
    - Configure PAT token settings
 
-6. **Production Deployment**
+7. **Production Deployment**
    
    See the comprehensive [Deployment Guide](docs/DEPLOYMENT.md) for detailed instructions.
    

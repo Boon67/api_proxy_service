@@ -308,6 +308,5 @@ If you were using deploy script with inline SQL:
 
 ## Additional Resources
 
-- [Deployment Guide](./DEPLOYMENT.md) - Complete deployment instructions
-- [Deployment Testing](./DEPLOYMENT_TESTING.md) - Testing deployment process
+- [Deployment Guide](./DEPLOYMENT.md) - Complete deployment instructions including testing
 

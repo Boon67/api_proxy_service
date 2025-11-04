@@ -108,20 +108,31 @@ class SnowflakeService {
 
       if (isSPCS && oauthToken) {
         // Use OAuth token authentication (recommended for SPCS)
+        // Following: https://docs.snowflake.com/en/developer-guide/snowpark-container-services/additional-considerations-services-jobs
         logger.info('Creating Snowflake connection using OAuth token (SPCS environment detected)');
+        
         if (!snowflakeHost) {
-          logger.warn('SNOWFLAKE_HOST not set, connection may fail');
+          throw new Error('SNOWFLAKE_HOST is required for SPCS connections. It should be automatically provided by Snowflake.');
         }
+        
+        if (!snowflakeAccount) {
+          throw new Error('SNOWFLAKE_ACCOUNT is required for SPCS connections. It should be automatically provided by Snowflake.');
+        }
+        
+        // Use SNOWFLAKE_HOST and SNOWFLAKE_ACCOUNT exactly as provided by Snowflake
+        // Do not modify or extract - they are already in the correct format
         connectionConfig = {
-          host: snowflakeHost,
-          account: snowflakeAccount,
-          token: oauthToken,
+          host: snowflakeHost,  // Must use SNOWFLAKE_HOST (not a constructed hostname)
+          account: snowflakeAccount,  // Use SNOWFLAKE_ACCOUNT as-is (account locator)
+          token: oauthToken,  // OAuth token from /snowflake/session/token
           authenticator: 'oauth',
           warehouse: config.warehouse,
           database: config.database,
           schema: config.schema,
           role: config.role
         };
+        
+        logger.info(`SPCS connection config: host=${snowflakeHost}, account=${snowflakeAccount}, warehouse=${config.warehouse || 'NOT SET'}, database=${config.database}, schema=${config.schema}, hasToken=${!!oauthToken}`);
       } else if (config.username && config.token) {
         // Use PAT (Programmatic Access Token) authentication (preferred for local dev)
         // PAT tokens use OAuth authenticator, not SNOWFLAKE_JWT

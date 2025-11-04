@@ -40,6 +40,12 @@ DATABASE="$DEFAULT_DATABASE"
 SCHEMA="$DEFAULT_SCHEMA"
 WAREHOUSE="$DEFAULT_WAREHOUSE"
 AUTO_CONFIRM=false
+DATABASE_ONLY=false
+SKIP_SERVICE=false
+SKIP_COMPUTE_POOL=false
+SKIP_WAREHOUSE=false
+SKIP_USER=false
+SKIP_ROLE=false
 
 # Parse command-line arguments
 parse_args() {
@@ -69,6 +75,30 @@ parse_args() {
                 AUTO_CONFIRM=true
                 shift
                 ;;
+            --database-only|--db-only)
+                DATABASE_ONLY=true
+                shift
+                ;;
+            --skip-service|--no-service)
+                SKIP_SERVICE=true
+                shift
+                ;;
+            --skip-compute-pool|--no-compute-pool)
+                SKIP_COMPUTE_POOL=true
+                shift
+                ;;
+            --skip-warehouse|--no-warehouse)
+                SKIP_WAREHOUSE=true
+                shift
+                ;;
+            --skip-user|--no-user)
+                SKIP_USER=true
+                shift
+                ;;
+            --skip-role|--no-role)
+                SKIP_ROLE=true
+                shift
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -95,6 +125,12 @@ Options:
   -c, --compute-pool NAME     Compute pool name (default: ${DEFAULT_COMPUTE_POOL})
   -n, --service NAME          Service name (default: ${SERVICE_NAME})
   -y, --yes                   Auto-confirm (non-interactive mode)
+      --database-only          Only clean up database (skip service, compute pool, user, role)
+      --skip-service           Skip service cleanup
+      --skip-compute-pool      Skip compute pool cleanup
+      --skip-warehouse         Skip warehouse cleanup
+      --skip-user              Skip user cleanup
+      --skip-role              Skip role cleanup
   -h, --help                  Show this help message
 
 Environment Variables:
@@ -129,14 +165,21 @@ confirm_cleanup() {
     fi
     
     echo -e "${YELLOW}⚠️  WARNING: This will permanently delete the following resources:${NC}"
-    echo -e "${RED}   Service: ${SERVICE_NAME}${NC}"
-    echo -e "${RED}   Compute Pool: ${COMPUTE_POOL}${NC}"
-    echo -e "${RED}   Database: ${DATABASE} (and ALL schemas, tables, views, procedures, etc.)${NC}"
-    echo -e "${RED}   Schema: ${DATABASE}.${SCHEMA}${NC}"
-    echo -e "${RED}   Warehouse: ${WAREHOUSE}${NC}"
-    echo -e "${RED}   Service User: ${SERVICE_USER_NAME}${NC}"
-    echo -e "${RED}   Service Role: ${SERVICE_ROLE_NAME}${NC}"
-    echo -e "${RED}   All tables, views, stored procedures, and other objects${NC}"
+    
+    if [ "$DATABASE_ONLY" = true ]; then
+        echo -e "${RED}   Database: ${DATABASE} (and ALL schemas, tables, views, procedures, etc.)${NC}"
+        echo -e "${BLUE}   (Skipping: Service, Compute Pool, Warehouse, User, Role)${NC}"
+    else
+        [ "$SKIP_SERVICE" != "true" ] && echo -e "${RED}   Service: ${SERVICE_NAME}${NC}"
+        [ "$SKIP_COMPUTE_POOL" != "true" ] && echo -e "${RED}   Compute Pool: ${COMPUTE_POOL}${NC}"
+        echo -e "${RED}   Database: ${DATABASE} (and ALL schemas, tables, views, procedures, etc.)${NC}"
+        echo -e "${RED}   Schema: ${DATABASE}.${SCHEMA}${NC}"
+        [ "$SKIP_WAREHOUSE" != "true" ] && echo -e "${RED}   Warehouse: ${WAREHOUSE}${NC}"
+        [ "$SKIP_USER" != "true" ] && echo -e "${RED}   Service User: ${SERVICE_USER_NAME}${NC}"
+        [ "$SKIP_ROLE" != "true" ] && echo -e "${RED}   Service Role: ${SERVICE_ROLE_NAME}${NC}"
+        echo -e "${RED}   All tables, views, stored procedures, and other objects${NC}"
+    fi
+    
     echo ""
     read -p "Are you sure you want to continue? (yes/no): " response
     
@@ -413,54 +456,93 @@ main() {
     echo -e "${YELLOW}Starting cleanup...${NC}"
     echo ""
     
-    # 1. Drop service (must be done before compute pool if using it)
-    drop_service
-    echo ""
-    
-    # 2. Drop compute pool
-    drop_compute_pool
-    echo ""
-    
-    # 3. Drop database (cascades to schema, tables, views, procedures, etc.)
-    # This is critical - dropping the database removes ALL data
-    drop_database
-    echo ""
-    
-    # 4. Drop warehouse
-    drop_warehouse
-    echo ""
-    
-    # 5. Drop service user (created by setup_service_account.sql)
-    # This must be done to fully clean up the deployment
-    drop_user
-    echo ""
-    
-    # 6. Drop service role (created by setup_service_account.sql)
-    drop_role
-    echo ""
+    if [ "$DATABASE_ONLY" = true ]; then
+        # Only drop database
+        echo -e "${BLUE}Database-only mode: Only cleaning up database${NC}"
+        drop_database
+        echo ""
+    else
+        # Drop all resources (respecting skip flags)
+        # 1. Drop service (must be done before compute pool if using it)
+        if [ "$SKIP_SERVICE" != "true" ]; then
+            drop_service
+            echo ""
+        fi
+        
+        # 2. Drop compute pool
+        if [ "$SKIP_COMPUTE_POOL" != "true" ]; then
+            drop_compute_pool
+            echo ""
+        fi
+        
+        # 3. Drop database (cascades to schema, tables, views, procedures, etc.)
+        # This is critical - dropping the database removes ALL data
+        drop_database
+        echo ""
+        
+        # 4. Drop warehouse
+        if [ "$SKIP_WAREHOUSE" != "true" ]; then
+            drop_warehouse
+            echo ""
+        fi
+        
+        # 5. Drop service user (created by setup_service_account.sql)
+        # This must be done to fully clean up the deployment
+        if [ "$SKIP_USER" != "true" ]; then
+            drop_user
+            echo ""
+        fi
+        
+        # 6. Drop service role (created by setup_service_account.sql)
+        if [ "$SKIP_ROLE" != "true" ]; then
+            drop_role
+            echo ""
+        fi
+    fi
     
     # Final verification (using default role)
     echo -e "${BLUE}Verifying cleanup...${NC}"
-    DB_STILL_EXISTS=$(snow sql -q "SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null | grep -qi "${DATABASE}" && echo "yes" || echo "no")
-    USER_STILL_EXISTS=$(snow sql -q "SHOW USERS LIKE '${SERVICE_USER_NAME}'" 2>/dev/null | grep -qi "${SERVICE_USER_NAME}" && echo "yes" || echo "no")
-    ROLE_STILL_EXISTS=$(snow sql -q "SHOW ROLES LIKE '${SERVICE_ROLE_NAME}'" 2>/dev/null | grep -qi "${SERVICE_ROLE_NAME}" && echo "yes" || echo "no")
     
+    # Always check database (it's always cleaned up)
+    DB_STILL_EXISTS=$(snow sql -q "SHOW DATABASES LIKE '${DATABASE}'" 2>/dev/null | grep -qi "${DATABASE}" && echo "yes" || echo "no")
     if [ "$DB_STILL_EXISTS" = "yes" ]; then
         echo -e "${YELLOW}⚠️  Database ${DATABASE} still exists. Manual cleanup may be required.${NC}"
     fi
     
-    if [ "$USER_STILL_EXISTS" = "yes" ]; then
-        echo -e "${YELLOW}⚠️  User ${SERVICE_USER_NAME} still exists. Manual cleanup may be required.${NC}"
+    # Only check user/role if they weren't skipped
+    if [ "$DATABASE_ONLY" != "true" ] && [ "$SKIP_USER" != "true" ]; then
+        USER_STILL_EXISTS=$(snow sql -q "SHOW USERS LIKE '${SERVICE_USER_NAME}'" 2>/dev/null | grep -qi "${SERVICE_USER_NAME}" && echo "yes" || echo "no")
+        if [ "$USER_STILL_EXISTS" = "yes" ]; then
+            echo -e "${YELLOW}⚠️  User ${SERVICE_USER_NAME} still exists. Manual cleanup may be required.${NC}"
+        fi
     fi
     
-    if [ "$ROLE_STILL_EXISTS" = "yes" ]; then
-        echo -e "${YELLOW}⚠️  Role ${SERVICE_ROLE_NAME} still exists. Manual cleanup may be required.${NC}"
-        echo -e "${BLUE}   You may need to switch to a role with sufficient permissions and run:${NC}"
-        echo -e "${BLUE}   DROP ROLE ${SERVICE_ROLE_NAME};${NC}"
+    if [ "$DATABASE_ONLY" != "true" ] && [ "$SKIP_ROLE" != "true" ]; then
+        ROLE_STILL_EXISTS=$(snow sql -q "SHOW ROLES LIKE '${SERVICE_ROLE_NAME}'" 2>/dev/null | grep -qi "${SERVICE_ROLE_NAME}" && echo "yes" || echo "no")
+        if [ "$ROLE_STILL_EXISTS" = "yes" ]; then
+            echo -e "${YELLOW}⚠️  Role ${SERVICE_ROLE_NAME} still exists. Manual cleanup may be required.${NC}"
+            echo -e "${BLUE}   You may need to switch to a role with sufficient permissions and run:${NC}"
+            echo -e "${BLUE}   DROP ROLE ${SERVICE_ROLE_NAME};${NC}"
+        fi
     fi
     
-    if [ "$DB_STILL_EXISTS" = "no" ] && [ "$USER_STILL_EXISTS" = "no" ] && [ "$ROLE_STILL_EXISTS" = "no" ]; then
-        echo -e "${GREEN}✅ Database, user, and role successfully removed${NC}"
+    # Summary message
+    if [ "$DATABASE_ONLY" = true ]; then
+        if [ "$DB_STILL_EXISTS" = "no" ]; then
+            echo -e "${GREEN}✅ Database successfully removed${NC}"
+        fi
+    else
+        VERIFIED_COUNT=0
+        [ "$DB_STILL_EXISTS" = "no" ] && VERIFIED_COUNT=$((VERIFIED_COUNT + 1))
+        if [ "$SKIP_USER" != "true" ]; then
+            [ "$USER_STILL_EXISTS" = "no" ] && VERIFIED_COUNT=$((VERIFIED_COUNT + 1))
+        fi
+        if [ "$SKIP_ROLE" != "true" ]; then
+            [ "$ROLE_STILL_EXISTS" = "no" ] && VERIFIED_COUNT=$((VERIFIED_COUNT + 1))
+        fi
+        if [ $VERIFIED_COUNT -gt 0 ]; then
+            echo -e "${GREEN}✅ Cleanup verified for ${VERIFIED_COUNT} resource(s)${NC}"
+        fi
     fi
     echo ""
     

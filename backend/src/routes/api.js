@@ -233,7 +233,7 @@ router.delete('/endpoints/:id', async (req, res) => {
     // Revoke associated PAT token
     const tokenData = await tokenService.getTokenByEndpointId(req.params.id);
     if (tokenData) {
-      await tokenService.revokePATToken(tokenData.token);
+      await tokenService.revokePATToken(tokenData.token, req.user?.username || 'system');
     }
 
     await databaseService.deleteEndpoint(req.params.id, req.user?.username || 'system');
@@ -267,13 +267,13 @@ router.post('/endpoints/:id/api_key', async (req, res) => {
     const existingToken = await tokenService.getTokenByEndpointId(req.params.id);
     if (existingToken) {
       // Revoke by token hash stored in database
-      await databaseService.revokePATToken(existingToken.token);
+      await databaseService.revokePATToken(existingToken.token, req.user?.username || 'admin');
     }
 
     // Create new token
     const tokenData = await tokenService.createPATToken(req.params.id, {
       endpointName: endpoint.name,
-      createdBy: req.user.username || 'admin'
+      createdBy: req.user?.username || 'admin'
     });
 
     res.json({
@@ -375,7 +375,7 @@ router.delete('/api_keys/:id', async (req, res) => {
       });
     } else {
       // Revoke the API key (soft delete)
-      await databaseService.revokePATToken(tokenData.token);
+      await databaseService.revokePATToken(tokenData.token, req.user?.username || 'system');
       logger.info(`API key revoked: ${tokenId}`);
 
       res.json({
@@ -439,6 +439,24 @@ router.patch('/endpoints/:id/status', async (req, res) => {
       status: newStatus,
       isActive: newStatus === 'active',
       updatedBy: req.user?.username || 'system'
+    });
+
+    // Log status change activity
+    const activityTypeMap = {
+      active: 'endpoint_enabled',
+      suspended: 'endpoint_suspended',
+      draft: 'endpoint_draft'
+    };
+    const activityType = activityTypeMap[newStatus] || 'endpoint_updated';
+    
+    await databaseService.logActivity({
+      type: activityType,
+      user: req.user?.username || 'system',
+      entityName: updatedEndpoint.name,
+      entityType: 'endpoint',
+      endpointId: req.params.id
+    }).catch(err => {
+      logger.warn('Could not log endpoint status change activity:', err.message);
     });
 
     const statusMessages = {
@@ -867,33 +885,5 @@ router.put('/endpoints/:id/tags', async (req, res) => {
   }
 });
 
-// PUT /api/api_keys/:id/tags - Set tags for an API key (deprecated - TOKEN_TAGS table no longer used)
-// This route is kept for backward compatibility but token tags are no longer supported
-router.put('/api_keys/:id/tags', async (req, res) => {
-  try {
-    const { tagIds } = req.body;
-    const token = await databaseService.getPATTokenById(req.params.id);
-    if (!token) {
-      return res.status(404).json({
-        success: false,
-        error: 'API key not found'
-      });
-    }
-
-    // TOKEN_TAGS table is no longer used, so this operation is a no-op
-    // Return empty array to maintain API compatibility
-    res.json({
-      success: true,
-      data: [],
-      message: 'Token tags are no longer supported. This operation has no effect.'
-    });
-  } catch (error) {
-    logger.error('Error setting API key tags:', error);
-    res.status(500).json({
-      success: false,
-      error: 'API key tags are no longer supported'
-    });
-  }
-});
 
 module.exports = router;

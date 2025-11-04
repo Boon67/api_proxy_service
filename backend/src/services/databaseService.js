@@ -14,6 +14,18 @@ class DatabaseService {
       // and load appropriate configuration (OAuth token in SPCS, snowflake.json locally)
       this.dbConfig = snowflakeService.loadConfig();
       this.connection = await snowflakeService.createConnection(this.dbConfig);
+      
+      // Set warehouse immediately after connection is established
+      if (this.dbConfig && this.dbConfig.warehouse) {
+        try {
+          await snowflakeService.executeQuery(this.connection, `USE WAREHOUSE ${this.dbConfig.warehouse}`, []);
+          logger.info(`Warehouse ${this.dbConfig.warehouse} set for connection`);
+        } catch (warehouseError) {
+          logger.warn(`Could not set warehouse ${this.dbConfig.warehouse}: ${warehouseError.message}`);
+        }
+      } else {
+        logger.warn('No warehouse configured - some queries may fail');
+      }
     }
     return this.connection;
   }
@@ -21,6 +33,22 @@ class DatabaseService {
   async executeQuery(sql, binds = []) {
     try {
       const connection = await this.getConnection();
+      
+      // Ensure warehouse is set before executing queries that require it
+      // Re-set warehouse if this is a query that needs it and not a USE WAREHOUSE command
+      if (this.dbConfig && this.dbConfig.warehouse && !sql.toUpperCase().includes('USE WAREHOUSE')) {
+        // Check if warehouse needs to be set (some queries like SELECT require warehouse)
+        const needsWarehouse = sql.toUpperCase().match(/\b(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|MERGE)\b/);
+        if (needsWarehouse) {
+          try {
+            await snowflakeService.executeQuery(connection, `USE WAREHOUSE ${this.dbConfig.warehouse}`, []);
+          } catch (warehouseError) {
+            // Log but don't fail - connection might already have warehouse set
+            logger.debug(`Warehouse ${this.dbConfig.warehouse} may already be in use: ${warehouseError.message}`);
+          }
+        }
+      }
+      
       return await snowflakeService.executeQuery(connection, sql, binds);
     } catch (error) {
       logger.error('Database query error:', error);
@@ -35,8 +63,8 @@ class DatabaseService {
   async getUserByUsername(username) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
-      SELECT USER_ID, USERNAME, PASSWORD_HASH, EMAIL, ROLE, IS_ACTIVE, 
-             CREATED_AT, UPDATED_AT, LAST_LOGIN, CREATED_BY
+      SELECT USER_ID, USERNAME, PASSWORD_HASH, FIRST_NAME, LAST_NAME, EMAIL, CONTACT_NUMBER, 
+             ROLE, IS_ACTIVE, CREATED_AT, UPDATED_AT, LAST_LOGIN, CREATED_BY
       FROM ${this.dbConfig.database}.${this.dbConfig.schema}.USERS
       WHERE UPPER(USERNAME) = UPPER(?) AND IS_ACTIVE = TRUE
     `;
@@ -47,8 +75,8 @@ class DatabaseService {
   async getUserById(userId) {
     await this.getConnection(); // Ensure dbConfig is initialized
     const sql = `
-      SELECT USER_ID, USERNAME, PASSWORD_HASH, EMAIL, ROLE, IS_ACTIVE, 
-             CREATED_AT, UPDATED_AT, LAST_LOGIN, CREATED_BY
+      SELECT USER_ID, USERNAME, PASSWORD_HASH, FIRST_NAME, LAST_NAME, EMAIL, CONTACT_NUMBER, 
+             ROLE, IS_ACTIVE, CREATED_AT, UPDATED_AT, LAST_LOGIN, CREATED_BY
       FROM ${this.dbConfig.database}.${this.dbConfig.schema}.USERS
       WHERE USER_ID = ?
     `;
@@ -79,24 +107,99 @@ class DatabaseService {
     return true;
   }
 
+  async getAllUsers() {
+    await this.getConnection();
+    const sql = `
+      SELECT USER_ID, USERNAME, FIRST_NAME, LAST_NAME, EMAIL, CONTACT_NUMBER, ROLE, IS_ACTIVE, 
+             CREATED_AT, UPDATED_AT, LAST_LOGIN, CREATED_BY
+      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.USERS
+      ORDER BY CREATED_AT DESC
+    `;
+    const result = await this.executeQuery(sql, []);
+    return result.rows;
+  }
+
   async createUser(userData) {
-    await this.getConnection(); // Ensure dbConfig is initialized
+    await this.getConnection();
     const userId = uuidv4();
     const sql = `
       INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.USERS
-        (USER_ID, USERNAME, PASSWORD_HASH, EMAIL, ROLE, IS_ACTIVE, CREATED_BY)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (USER_ID, USERNAME, PASSWORD_HASH, FIRST_NAME, LAST_NAME, EMAIL, CONTACT_NUMBER, ROLE, IS_ACTIVE, CREATED_BY)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     await this.executeQuery(sql, [
       userId,
       userData.username.toUpperCase(),
       userData.passwordHash,
+      userData.firstName || null,
+      userData.lastName || null,
       userData.email || null,
+      userData.contactNumber || null,
       userData.role || 'admin',
       userData.isActive !== false,
       userData.createdBy || 'system'
     ]);
     return await this.getUserById(userId);
+  }
+
+  async updateUser(userId, userData) {
+    await this.getConnection();
+    const updates = [];
+    const values = [];
+    
+    if (userData.firstName !== undefined) {
+      updates.push('FIRST_NAME = ?');
+      values.push(userData.firstName || null);
+    }
+    if (userData.lastName !== undefined) {
+      updates.push('LAST_NAME = ?');
+      values.push(userData.lastName || null);
+    }
+    if (userData.email !== undefined) {
+      updates.push('EMAIL = ?');
+      values.push(userData.email || null);
+    }
+    if (userData.contactNumber !== undefined) {
+      updates.push('CONTACT_NUMBER = ?');
+      values.push(userData.contactNumber || null);
+    }
+    if (userData.role !== undefined) {
+      updates.push('ROLE = ?');
+      values.push(userData.role);
+    }
+    if (userData.isActive !== undefined) {
+      updates.push('IS_ACTIVE = ?');
+      values.push(userData.isActive);
+    }
+    if (userData.passwordHash !== undefined) {
+      updates.push('PASSWORD_HASH = ?');
+      values.push(userData.passwordHash);
+    }
+    
+    if (updates.length === 0) {
+      return await this.getUserById(userId);
+    }
+    
+    updates.push('UPDATED_AT = CURRENT_TIMESTAMP()');
+    values.push(userId);
+    
+    const sql = `
+      UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.USERS
+      SET ${updates.join(', ')}
+      WHERE USER_ID = ?
+    `;
+    await this.executeQuery(sql, values);
+    return await this.getUserById(userId);
+  }
+
+  async deleteUser(userId) {
+    await this.getConnection();
+    const sql = `
+      DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.USERS
+      WHERE USER_ID = ?
+    `;
+    await this.executeQuery(sql, [userId]);
+    return true;
   }
 
   // =====================================================
@@ -323,7 +426,22 @@ class DatabaseService {
       endpointData.metadata ? JSON.stringify(endpointData.metadata) : null
     ]);
     }
-    return await this.getEndpointById(endpointId);
+    
+    // Log endpoint creation activity
+    const createdEndpoint = await this.getEndpointById(endpointId);
+    if (createdEndpoint) {
+      await this.logActivity({
+        type: 'endpoint_created',
+        user: endpointData.createdBy || 'admin',
+        entityName: createdEndpoint.name,
+        entityType: 'endpoint',
+        endpointId: endpointId
+      }).catch(err => {
+        logger.warn('Could not log endpoint creation activity:', err.message);
+      });
+    }
+    
+    return createdEndpoint;
   }
 
   async updateEndpoint(endpointId, endpointData) {
@@ -473,7 +591,22 @@ class DatabaseService {
         endpointId
       ]);
     }
-    return await this.getEndpointById(endpointId);
+    
+    // Log endpoint update activity
+    const updatedEndpoint = await this.getEndpointById(endpointId);
+    if (updatedEndpoint) {
+      await this.logActivity({
+        type: 'endpoint_updated',
+        user: endpointData.updatedBy || endpointData.createdBy || 'system',
+        entityName: updatedEndpoint.name,
+        entityType: 'endpoint',
+        endpointId: endpointId
+      }).catch(err => {
+        logger.warn('Could not log endpoint update activity:', err.message);
+      });
+    }
+    
+    return updatedEndpoint;
   }
 
   async deleteEndpoint(endpointId, deletedBy = 'system') {
@@ -566,7 +699,26 @@ class DatabaseService {
       endpointId,
       metadata.createdBy || 'admin'
     ]);
-    return await this.getPATTokenById(tokenId);
+    
+    // Log API key generation activity
+    const tokenData = await this.getPATTokenById(tokenId);
+    if (tokenData && tokenData.endpointId) {
+      const endpoint = await this.getEndpointById(tokenData.endpointId).catch(() => null);
+      if (endpoint) {
+        await this.logActivity({
+          type: 'token_generated',
+          user: metadata.createdBy || 'admin',
+          entityName: endpoint.name,
+          entityType: 'api_key',
+          endpointId: tokenData.endpointId,
+          apiKeyId: tokenId
+        }).catch(err => {
+          logger.warn('Could not log token generation activity:', err.message);
+        });
+      }
+    }
+    
+    return tokenData;
   }
 
   async getPATTokenByHash(tokenHash) {
@@ -620,14 +772,37 @@ class DatabaseService {
     return result;
   }
 
-  async revokePATToken(tokenHash) {
+  async revokePATToken(tokenHash, revokedBy = 'system') {
     await this.getConnection(); // Ensure dbConfig is initialized
+    
+    // Get token info before revoking for activity log
+    const token = await this.getPATTokenByHash(tokenHash);
+    let endpoint = null;
+    if (token && token.endpointId) {
+      endpoint = await this.getEndpointById(token.endpointId).catch(() => null);
+    }
+    
     const sql = `
       UPDATE ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS
       SET IS_ACTIVE = FALSE
       WHERE API_KEY = ?
     `;
     await this.executeQuery(sql, [tokenHash]);
+    
+    // Log revocation activity
+    if (token && endpoint) {
+      await this.logActivity({
+        type: 'token_revoked',
+        user: revokedBy,
+        entityName: endpoint.name,
+        entityType: 'api_key',
+        endpointId: token.endpointId,
+        apiKeyId: token.id
+      }).catch(err => {
+        logger.warn('Could not log token revocation activity:', err.message);
+      });
+    }
+    
     return true;
   }
 
@@ -656,15 +831,7 @@ class DatabaseService {
     }
     
     // First delete related records
-    // Delete token tags
-    const deleteTagsSql = `
-      DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS
-      WHERE API_KEY_ID = ?
-    `;
-    await this.executeQuery(deleteTagsSql, [tokenId]).catch(err => {
-      // If TOKEN_TAGS table doesn't exist or error, continue
-      logger.warn('Could not delete token tags:', err.message);
-    });
+    // Note: TOKEN_TAGS table is no longer used
 
     // Delete token usage logs
     const deleteUsageSql = `
@@ -918,25 +1085,35 @@ class DatabaseService {
 
   async logApiRequest(requestData) {
     await this.getConnection(); // Ensure dbConfig is initialized
+    
     const sql = `
       INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.API_AUDIT_LOG
         (REQUEST_ID, ENDPOINT_ID, API_KEY_ID, REQUEST_METHOD, REQUEST_URL, 
-         REQUEST_IP, USER_AGENT, REQUEST_BODY, RESPONSE_STATUS, 
-         RESPONSE_TIME_MS, ERROR_MESSAGE)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         REQUEST_IP, REQUEST_IP_X_FORWARDED, USER_AGENT, REQUEST_BODY, 
+         REQUEST_SIZE_BYTES, RESPONSE_STATUS, RESPONSE_SIZE_BYTES,
+         RESPONSE_TIME_MS, START_TIME, END_TIME, ERROR_MESSAGE, 
+         ROUTE_PATH, USER_ID)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     await this.executeQuery(sql, [
       requestData.requestId || null,
       requestData.endpointId || null,
-      requestData.tokenId || null,
+      requestData.apiKeyId || requestData.tokenId || null,
       requestData.method || null,
       requestData.url || null,
       requestData.ip || null,
+      requestData.forwardedFor || null,
       requestData.userAgent || null,
       requestData.body ? JSON.stringify(requestData.body) : null,
+      requestData.requestSize || null,
       requestData.status || null,
+      requestData.responseSize || null,
       requestData.responseTime || null,
-      requestData.errorMessage || null
+      requestData.startTime || null,
+      requestData.endTime || null,
+      requestData.errorMessage || null,
+      requestData.routePath || null,
+      requestData.userId || null
     ]);
   }
 
@@ -1193,7 +1370,7 @@ class DatabaseService {
             e.NAME as entity_name,
             t.CREATED_AT as activity_timestamp,
             t.CREATED_BY as user,
-            'token' as entity_type
+            'api_key' as entity_type
           FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t
           JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e 
             ON t.ENDPOINT_ID = e.ENDPOINT_ID
@@ -1202,15 +1379,15 @@ class DatabaseService {
           UNION ALL
           
           SELECT 
-            API_KEY_ID as activity_id,
+            t.API_KEY_ID as activity_id,
             CASE 
-              WHEN IS_ACTIVE = FALSE THEN 'token_revoked'
+              WHEN t.IS_ACTIVE = FALSE THEN 'token_revoked'
               ELSE 'token_used'
             END as activity_type,
             e.NAME as entity_name,
             t.LAST_USED as activity_timestamp,
             t.CREATED_BY as user,
-            'token' as entity_type
+            'api_key' as entity_type
           FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t
           JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e 
             ON t.ENDPOINT_ID = e.ENDPOINT_ID
@@ -1226,7 +1403,7 @@ class DatabaseService {
             e.NAME as entity_name,
             COALESCE(t.LAST_USED, t.CREATED_AT) as activity_timestamp,
             t.CREATED_BY as user,
-            'token' as entity_type
+            'api_key' as entity_type
           FROM ${this.dbConfig.database}.${this.dbConfig.schema}.API_KEYS t
           JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINTS e 
             ON t.ENDPOINT_ID = e.ENDPOINT_ID
@@ -1268,17 +1445,26 @@ class DatabaseService {
       `;
       
       const result = await this.executeQuery(sql, [limit]);
+      
+      logger.debug(`getRecentActivity returned ${result.rows.length} rows`);
+      
       return result.rows.map(row => ({
         id: row.ACTIVITY_ID,
-        type: row.ACTIVITY_TYPE.toLowerCase(),
-        entityName: row.ENTITY_NAME,
-        entityType: row.ENTITY_TYPE,
+        type: row.ACTIVITY_TYPE ? row.ACTIVITY_TYPE.toLowerCase() : 'unknown',
+        entityName: row.ENTITY_NAME || 'Unknown',
+        entityType: row.ENTITY_TYPE || 'unknown',
         timestamp: row.ACTIVITY_TIMESTAMP,
         user: row.USER || 'system'
       }));
     } catch (e) {
       // If query still fails, return empty array
       logger.error('Error fetching activity:', e);
+      logger.error('Activity query error details:', {
+        message: e.message,
+        code: e.code,
+        sqlState: e.sqlState,
+        sqlCode: e.sqlCode
+      });
       return [];
     }
   }
@@ -1394,10 +1580,7 @@ class DatabaseService {
       `DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.ENDPOINT_TAGS WHERE TAG_ID = ?`,
       [tagId]
     );
-    await this.executeQuery(
-      `DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS WHERE TAG_ID = ?`,
-      [tagId]
-    );
+    // Note: TOKEN_TAGS table is no longer used
     // Then delete the tag
     await this.executeQuery(
       `DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TAGS WHERE TAG_ID = ?`,
@@ -1443,42 +1626,6 @@ class DatabaseService {
     return await this.getEndpointTags(endpointId);
   }
 
-  async getTokenTags(tokenId) {
-    await this.getConnection();
-    const sql = `
-      SELECT t.TAG_ID, t.NAME, t.COLOR, t.DESCRIPTION
-      FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS tt
-      JOIN ${this.dbConfig.database}.${this.dbConfig.schema}.TAGS t ON tt.TAG_ID = t.TAG_ID
-      WHERE tt.API_KEY_ID = ?
-      ORDER BY t.NAME
-    `;
-    const result = await this.executeQuery(sql, [tokenId]);
-    return result.rows.map(row => ({
-      id: row.TAG_ID,
-      name: row.NAME,
-      color: row.COLOR || '#3B82F6',
-      description: row.DESCRIPTION || ''
-    }));
-  }
-
-  async setTokenTags(tokenId, tagIds) {
-    await this.getConnection();
-    // Remove existing tags
-    await this.executeQuery(
-      `DELETE FROM ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS WHERE API_KEY_ID = ?`,
-      [tokenId]
-    );
-    // Add new tags using parameterized query
-    if (tagIds && tagIds.length > 0) {
-      for (const tagId of tagIds) {
-        await this.executeQuery(
-          `INSERT INTO ${this.dbConfig.database}.${this.dbConfig.schema}.TOKEN_TAGS (API_KEY_ID, TAG_ID) VALUES (?, ?)`,
-          [tokenId, tagId]
-        );
-      }
-    }
-    return await this.getTokenTags(tokenId);
-  }
 
   // Cleanup method to close connection when needed
   async closeConnection() {
