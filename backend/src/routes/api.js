@@ -157,9 +157,49 @@ router.post('/endpoints', validateEndpoint, async (req, res) => {
     });
   } catch (error) {
     logger.error('Error creating endpoint:', error);
+    
+    // Check for specific database errors and return user-friendly messages
+    const errorCodeStr = error.code ? (typeof error.code === 'string' ? error.code : error.code.toString()) : '';
+    const errorMessage = error.message || '';
+    
+    // Duplicate path constraint violation
+    if (errorCodeStr === '200006' || 
+        error.sqlState === '22000' ||
+        errorMessage.includes('ENDPOINTS_PATH_UNIQUE') ||
+        errorMessage.includes('duplicate key') ||
+        errorMessage.includes('already in use')) {
+      return res.status(409).json({
+        success: false,
+        error: 'Path already exists',
+        message: errorMessage.includes('already in use') 
+          ? errorMessage 
+          : 'The endpoint path you specified is already in use. Please choose a different path.'
+      });
+    }
+    
+    // Path validation errors
+    if (errorMessage.includes('Path must contain')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid path',
+        message: errorMessage
+      });
+    }
+    
+    // Generic database errors
+    if (errorCodeStr.startsWith('0009') || errorCodeStr.startsWith('2000') || error.sqlState) {
+      return res.status(400).json({
+        success: false,
+        error: 'Database error',
+        message: errorMessage || 'An error occurred while creating the endpoint'
+      });
+    }
+    
+    // Default error response
     res.status(500).json({
       success: false,
-      error: 'Failed to create endpoint'
+      error: 'Failed to create endpoint',
+      message: process.env.NODE_ENV !== 'production' ? errorMessage : undefined
     });
   }
 });

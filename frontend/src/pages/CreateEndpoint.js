@@ -87,10 +87,17 @@ const CreateEndpoint = () => {
         
         toast.success('Endpoint created successfully!');
       } else {
-        toast.error(response.error || 'Failed to create endpoint');
+        // Show error message if available, otherwise show error field
+        const errorMessage = response.message || response.error || 'Failed to create endpoint';
+        toast.error(errorMessage);
       }
     } catch (error) {
-      toast.error('An error occurred while creating the endpoint');
+      // Show error message from response if available
+      const errorMessage = error.response?.data?.message || 
+                          error.response?.data?.error || 
+                          error.message || 
+                          'An error occurred while creating the endpoint';
+      toast.error(errorMessage);
     }
   };
 

@@ -9,6 +9,8 @@ class DatabaseService {
   }
 
   async getConnection() {
+    // Create new connection if one doesn't exist
+    // Connection health is checked in executeQuery() when errors occur
     if (!this.connection) {
       // Use snowflakeService.loadConfig() to automatically detect SPCS vs local
       // and load appropriate configuration (OAuth token in SPCS, snowflake.json locally)
@@ -51,8 +53,48 @@ class DatabaseService {
       
       return await snowflakeService.executeQuery(connection, sql, binds);
     } catch (error) {
-      logger.error('Database query error:', error);
-      throw error;
+      // Check if this is a connection termination error
+      const errorCodeStr = error.code ? (typeof error.code === 'string' ? error.code : error.code.toString()) : '';
+      const isConnectionError = errorCodeStr === '407002' || // Unable to perform operation using terminated connection
+                                errorCodeStr.startsWith('0800') || // Connection errors
+                                error.sqlState === '08003' || // Connection does not exist
+                                error.message?.toLowerCase().includes('terminated connection') ||
+                                error.message?.toLowerCase().includes('connection does not exist');
+      
+      if (isConnectionError) {
+        logger.warn('Connection error detected, will retry with new connection:', {
+          errorCode: error.code,
+          sqlState: error.sqlState,
+          message: error.message
+        });
+        // Clear the connection so getConnection() will create a new one
+        this.connection = null;
+        
+        // Retry once with a new connection
+        try {
+          const newConnection = await this.getConnection();
+          
+          // Re-set warehouse if needed
+          if (this.dbConfig && this.dbConfig.warehouse && !sql.toUpperCase().includes('USE WAREHOUSE')) {
+            const needsWarehouse = sql.toUpperCase().match(/\b(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|MERGE)\b/);
+            if (needsWarehouse) {
+              try {
+                await snowflakeService.executeQuery(newConnection, `USE WAREHOUSE ${this.dbConfig.warehouse}`, []);
+              } catch (warehouseError) {
+                logger.debug(`Warehouse ${this.dbConfig.warehouse} may already be in use: ${warehouseError.message}`);
+              }
+            }
+          }
+          
+          return await snowflakeService.executeQuery(newConnection, sql, binds);
+        } catch (retryError) {
+          logger.error('Database query error after retry:', retryError);
+          throw retryError;
+        }
+      } else {
+        logger.error('Database query error:', error);
+        throw error;
+      }
     }
   }
 
